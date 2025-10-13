@@ -8,7 +8,7 @@ import EducationDetails from './UserForm/EducationDetails';
 import WorkExperience from './UserForm/WorkExperience';
 
 const tabs = ['Personal Information'];
-// const tabs = ['Personal Information', 'Education Details', 'Work Experience'];
+// const tabs = ['Personal Info', 'Education Details', 'Work Experience'];
 
 const UserForm = () => {
   const [activeTab, setActiveTab] = useState(0);
