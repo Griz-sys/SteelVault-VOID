@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Client {
+  id                    Int           @id @default(autoincrement())
+  name                  String
+  email                 String?       @unique
+  companyName           String?
+  contactNo             String?
+  address               String?
+  dbUrl                 String?       @map("DB_URL")
+  configuration         Json          @default("{}")
+  ccListData            Json          @default("[]")
+  folderStructure       Json          @default("{}")
+  totalProjects         Int           @default(0)
+  activeProjects        Int           @default(0)
+  completedProjects     Int           @default(0)
+  totalProjectValue     Decimal?      @db.Decimal(15,2)
+  totalWeightage        Decimal?      @db.Decimal(10,2)
+  lastActivityDate      DateTime?
+  attachments           Json          @default("[]")
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  documentLogs          DocumentLog[]
+  projects              Project[]     @relation("ClientProjects")
+  users                 User[]        @relation("ClientUsers")
+  projectDrawings       ProjectDrawing[]
+}
+
+model User {
+  id            Int       @id @default(autoincrement())
+  name          String
+  email         String    @unique
+  password      String
+  userType      String
+  clientId      Int?
+  contactNo     String?
+  address       String?
+  gender        String?
+  createdAt     DateTime  @default(now())
+  relievedDate  DateTime?
+  solTLProjects Project[] @relation("UserSolTL")
+  client        Client?   @relation("ClientUsers", fields: [clientId], references: [id])
+}
+
+model Project {
+  id                      Int           @id @default(autoincrement())
+  projectNo               String        @unique
+  solProjectNo            String?       @unique // SOL internal project number
+  name                    String
+  description             String?
+  clientId                Int
+  solTLId                 Int?          // Team Lead assignment
+  status                  String        @default("PLANNING") // PLANNING, IN_PROGRESS, ON_HOLD, COMPLETED, CANCELLED, DELAYED
+  priority                String        @default("MEDIUM") // HIGH, MEDIUM, LOW, CRITICAL
+  progress                Decimal       @default(0.0) @db.Decimal(5,2) // 0.00 to 100.00
+  branch                  String?       // Project branch/location
+  startDate               DateTime?
+  endDate                 DateTime?
+  expectedCompletion      DateTime?
+  totalDays               Int?
+  estimationDate          DateTime?
+  totalProjectHours       String?
+  actualProjectHours      String?
+  totalSheetQty           String?
+  weightTonnage           String?       // Total weight/tonnage
+  projectComplexity       String?       // SIMPLE, MEDIUM, COMPLEX, HIGHLY_COMPLEX
+  solJobNo                String?
+  projectType             String?
+  projectSubType          String?
+  // Added to align with seed script usage
+  projectDataFolder       String?
+  jobName                 String?
+  estimationRows          Json           @default("[]")
+  lastUpdated             DateTime      @updatedAt @default(now())
+  lastActivityDate        DateTime?
+  createdAt               DateTime      @default(now())
+  documentLogs            DocumentLog[]
+  projectDrawings         ProjectDrawing[]
+  client                  Client        @relation("ClientProjects", fields: [clientId], references: [id])
+  solTL                   User?         @relation("UserSolTL", fields: [solTLId], references: [id])
+}
+
+model DocumentLog {
+  id           Int      @id @default(autoincrement())
+  fileName     String
+  clientId     Int
+  projectId    Int
+  storagePath  String
+  size         Int
+  uploadedAt   DateTime @default(now())
+  logType      String?
+  submittal    String?
+  client       Client   @relation(fields: [clientId], references: [id])
+  project      Project  @relation(fields: [projectId], references: [id])
+}
+
+// Stores the latest state of a project's drawing by DrgNo and optional category.
+// Intended to be upserted on publish so UI can show current revision and attachment name.
+model ProjectDrawing {
+  id             Int       @id @default(autoincrement())
+  clientId       Int
+  projectId      Int
+  drgNo          String
+  item           String?
+  category       String?   // A/G/W etc.
+  revision       String?
+  fileName       String?   // last attached file name (local label)
+  lastAttachedAt DateTime? // when it was last included in a publish
+  meta           Json?     // optional details (detailer/checker/sheetSize)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  client         Client    @relation(fields: [clientId], references: [id])
+  project        Project   @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, drgNo, category])
+}
