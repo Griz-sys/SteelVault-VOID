@@ -5,8 +5,6 @@ const useDrawingStore = create((set, get) => ({
   projectName: '',
   projectNo: '',
   selectedClientId: null,
-  selectedProjectId: null, // added for compatibility with PublishDrawing component
-  selectedPackage: null,   // holds the currently selected package object
   approvedDrawings: [],
   approvedExtras: [],
   approvedModels: [],
@@ -28,8 +26,6 @@ const useDrawingStore = create((set, get) => ({
   // ===== Setters =====
   setProjectDetails: (name, no) => set({ projectName: name, projectNo: no }),
   setSelectedClientId: (clientId) => set({ selectedClientId: clientId }),
-  setSelectedProjectId: (projectId) => set({ selectedProjectId: projectId }),
-  setSelectedPackage: (pkg) => set({ selectedPackage: pkg }),
   setApprovedDrawings: (drawings) => set({ approvedDrawings: drawings }),
   setApprovedExtras: (extras) => set({ approvedExtras: extras }),
   setApprovedModels: (models) => set({ approvedModels: models }),
@@ -108,32 +104,53 @@ const useDrawingStore = create((set, get) => ({
       ),
     })),
 
-  // ===== Excel Update Logic =====
-  updateFromExcel: (excelData) =>
-    set((state) => ({
-      drawings: (state.drawings || []).map((d) => {
-        const excelRow = excelData.find(
-          (row) =>
-            String(row['Drawing No'] || row['drawing no'] || row['drg no'] || '').trim() ===
-            String(d.drawingNo).trim()
-        );
+  updateFromExcel: (excelData) => {
+    set((state) => {
+      const updatedDrawings = state.drawings.map((d) => {
+        // Try to match drawing number using multiple field names
+        const excelRow = excelData.find((row) => {
+          const drgNo = (d.drgNo || "").toString().trim().toLowerCase();
+          return (
+            (row["drg no"] && row["drg no"].toString().trim().toLowerCase() === drgNo) ||
+            (row["drawing no"] && row["drawing no"].toString().trim().toLowerCase() === drgNo) ||
+            (row["drgname"] && row["drgname"].toString().trim().toLowerCase() === drgNo)
+          );
+        });
+
         if (!excelRow) return d;
+
+        // Normalize all keys (trim, lowercase)
+        const normalizedRow = Object.keys(excelRow).reduce((acc, key) => {
+          acc[key.toLowerCase().trim()] = excelRow[key];
+          return acc;
+        }, {});
+
+        // Handle both straight and curly apostrophes
+        const sheetSize =
+          normalizedRow["drg'size"] ||
+          normalizedRow["drg’size"] || // ← curly apostrophe
+          normalizedRow["drg size"] ||
+          normalizedRow["sheet size"] ||
+          normalizedRow["sheetsize"] ||
+          normalizedRow["size"] ||
+          d.sheetSize ||
+          "";
 
         return {
           ...d,
-          finish: excelRow['FINISH'] || excelRow['finish'] || d.finish || '',
-          modBy: excelRow['MOD BY'] || excelRow['mod by'] || d.modBy || '',
-          revRemarks: excelRow['REV REMARKS'] || excelRow['rev remarks'] || d.revRemarks || '',
-          sheetSize:
-            excelRow["DRG'SIZE"] ||
-            excelRow['drg size'] ||
-            excelRow['Sheet Size'] ||
-            d.sheetSize ||
-            '',
+          finish: normalizedRow["finish"] || d.finish || "",
+          modBy: normalizedRow["mod by"] || normalizedRow["modeler"] || d.modBy || "",
+          revRemarks: normalizedRow["rev remarks"] || normalizedRow["remarks"] || d.revRemarks || "",
+          sheetSize,
         };
-      }),
-    })),
+      });
+
+      return {
+        drawings: updatedDrawings,
+        approvedDrawings: updatedDrawings,
+      };
+    });
+  },
 }));
 
 export default useDrawingStore;
-

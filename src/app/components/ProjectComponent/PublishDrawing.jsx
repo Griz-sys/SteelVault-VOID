@@ -106,24 +106,6 @@ const stripFrTrSuffix = (token) => {
   if (up.endsWith('FR') || up.endsWith('TR')) return up.slice(0, -2);
   return up;
 };
-// Normalize category to canonical A/G/W when possible; otherwise empty or first letter uppercased
-const normalizeCategory = (cat) => {
-  const c = String(cat || '').trim().toUpperCase();
-  if (!c) return '';
-  // direct A/G/W
-  if (c === 'A' || c === 'G' || c === 'W') return c;
-  // common synonyms
-  if (c.startsWith('SHOP') || c === 'S') return 'A';
-  if (c.startsWith('ERECTION') || c === 'E' || c === 'GA' || c.includes('GENERAL')) return 'G';
-  if (c.includes('PART') || c.includes('COMPONENT') || c === 'P') return 'W';
-  // fallback
-  return c[0] || '';
-};
-const normalizeDrawingKey = (drgNo, cat) => {
-  const normDr = stripFrTrSuffix(normalizeToken(drgNo));
-  const normCat = normalizeCategory(cat);
-  return { normDr, normCat, key: `${normDr}::${normCat}` };
-};
 const getLeadingToken = (name) => {
   const base = String(name || '');
   const start = base.search(/[A-Za-z0-9]/);
@@ -148,9 +130,11 @@ const extractRevisionFromFileName = (fileName) => {
 };
 
 const checkRevisionMatch = (drawingRev, fileName) => {
-  // Deprecated for conflict purposes: we no longer compare against filename revisions.
-  // Keep returning true to avoid marking conflicts from filenames.
-  return true;
+  if (!fileName || typeof fileName !== 'string') return true; // treat as no conflict
+  const fileRev = extractRevisionFromFileName(fileName);
+  if (!fileRev) return true;
+  const norm = (rev) => (rev || rev === 0) ? String(rev).toLowerCase().trim() : "";
+  return norm(drawingRev) === norm(fileRev);
 };
 
 // Signed URL helper from Code #1 (present here, but **not used** on this page for Extras/3D)
@@ -198,8 +182,6 @@ const PublishDrawing = () => {
   const {
     setProjectDetails,
     setSelectedClientId: setStoreSelectedClientId,
-    setSelectedProjectId,
-    setSelectedPackage,
     setApprovedDrawings,
     setApprovedExtras,
     setApprovedModels,
@@ -219,75 +201,11 @@ const PublishDrawing = () => {
   const [excelFileData, setExcelFileData] = useState([]);
   const [projects, setProjects] = useState([]);
   const [allProjects, setAllProjects] = useState([]);
-  const [baseProjects, setBaseProjects] = useState([]); // allowed projects for current user
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [clients, setClients] = useState([]);
   const [loadingClients, setLoadingClients] = useState(false);
   const [user, setUser] = useState(null);
   const [selectedClientId, setSelectedClientId] = useState(null);
-  const [selectedProjectId, setLocalSelectedProjectId] = useState(null);
-  const [packages, setPackages] = useState([]);
-  const [selectedPackageId, setSelectedPackageId] = useState('');
-
-  // Previous submissions (per package) UI state
-  const [prevOpen, setPrevOpen] = useState(false);
-  const [prevLoading, setPrevLoading] = useState(false);
-  const [prevError, setPrevError] = useState('');
-  const [prevRows, setPrevRows] = useState([]);
-  // Map of previous revisions for current package: key `${drawingNo}::${category}` -> revision
-  const [prevRevMap, setPrevRevMap] = useState({});
-  const [prevRevLoading, setPrevRevLoading] = useState(false);
-  const [prevRevError, setPrevRevError] = useState('');
-  const [prevRevHasFetched, setPrevRevHasFetched] = useState(false);
-
-  // Fetch previous revisions for selected project/package and build a map
-  React.useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      if (!selectedProjectId || !selectedPackageId) { setPrevRevMap({}); setPrevRevError(''); setPrevRevHasFetched(false); return; }
-      setPrevRevLoading(true); setPrevRevError(''); setPrevRevHasFetched(false);
-      try {
-  const url = `/api/project-drawings?projectId=${Number(selectedProjectId)}&packageId=${Number(selectedPackageId)}`;
-        const r = await fetch(url, { cache: 'no-store' });
-        if (!r.ok) throw new Error(`Failed to load prev revisions (${r.status})`);
-        const arr = await r.json();
-        const map = {};
-        if (Array.isArray(arr)) {
-          // Choose latest by updatedAt or lastAttachedAt
-          for (const row of arr) {
-            const dr = row?.drawingNumber ?? row?.drgNo ?? row?.drg_no;
-            if (!dr) continue;
-            const catRaw = row?.category ?? row?.Category ?? '';
-            const { normDr, normCat, key } = normalizeDrawingKey(dr, catRaw);
-            const ts = new Date(row?.updatedAt || row?.updated_at || row?.lastAttachedAt || row?.lastattachedat || 0).getTime();
-            const prev = map[key];
-            if (!prev || ts > prev._ts) {
-              const revVal = String(row?.revision ?? row?.rev ?? '').trim();
-              map[key] = { rev: revVal, _ts: ts };
-              // also store a category-agnostic fallback for this drawing number
-              const keyNoCat = normDr;
-              const prev2 = map[keyNoCat];
-              if (!prev2 || ts > prev2._ts) {
-                map[keyNoCat] = { rev: revVal, _ts: ts };
-              }
-            }
-          }
-        }
-        if (!cancelled) {
-          // Strip helper _ts
-          const out = {};
-          for (const k of Object.keys(map)) out[k] = map[k].rev ?? '';
-          setPrevRevMap(out);
-        }
-      } catch (e) {
-        if (!cancelled) setPrevRevError(e?.message || 'Failed loading previous revisions');
-      } finally {
-        if (!cancelled) { setPrevRevLoading(false); setPrevRevHasFetched(true); }
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [selectedProjectId, selectedPackageId, drawings]);
 
   const [selectedRows, setSelectedRows] = useState(new Set());                 // drawings table
   const [selectedAttachmentRows, setSelectedAttachmentRows] = useState(new Set()); // attachments (extras + models)
@@ -383,115 +301,6 @@ const PublishDrawing = () => {
     return { attached, total, missing };
   }, [drawings]);
 
-  /* ====== Revision sequence validation (client-side only, using Rev column) ====== */
-  const revisionConflicts = useMemo(() => {
-    // If we're expecting DB previous revisions, wait until they load to avoid false warnings
-    if (selectedProjectId && selectedPackageId && (prevRevLoading || !prevRevHasFetched)) {
-      return new Map();
-    }
-    // Group rows by normalized DrgNo
-    const byDrg = new Map();
-    safeArr(drawings).forEach((row) => {
-      const key = normalizeToken(row?.drgNo || '');
-      if (!key) return;
-      if (!byDrg.has(key)) byDrg.set(key, []);
-      byDrg.get(key).push(row);
-    });
-
-    const conflicts = new Map(); // rowId -> message
-
-    const isLetter = (r) => /^[A-Za-z]$/.test(String(r || '').trim());
-    const isNumber = (r) => /^\d+$/.test(String(r || '').trim());
-
-    for (const [, rows] of byDrg.entries()) {
-      // Collect existing revisions in this batch (letters and numbers)
-      const letterSet = new Set();
-      const numberSet = new Set();
-      rows.forEach((r) => {
-        const rev = String(r?.rev ?? '').trim();
-        if (!rev || rev === '-') return;
-        if (isLetter(rev)) letterSet.add(rev.toUpperCase());
-        else if (isNumber(rev)) numberSet.add(rev);
-      });
-
-      rows.forEach((r) => {
-        const revRaw = String(r?.rev ?? '').trim();
-        const id = r?.id;
-        if (!id) return;
-        if (!revRaw || revRaw === '-') return; // no revision -> no conflict
-
-        const dr = r?.drgNo ?? r?.drawingNo;
-        const catRaw = r?.category ?? '';
-        const { normDr, normCat } = normalizeDrawingKey(dr, catRaw);
-        const prevDb = prevRevMap?.[`${normDr}::${normCat}`] ?? prevRevMap?.[normDr] ?? '';
-        // If we rely on DB history, but it's not loaded, skip conflicts.
-        if (selectedProjectId && selectedPackageId && (prevRevLoading || !prevRevHasFetched)) return;
-
-        const revU = revRaw.toUpperCase();
-        if (isLetter(revRaw)) {
-          if (prevDb && /^[A-Za-z]$/.test(String(prevDb))) {
-            // DB prev exists and is a letter: require immediate next
-            const prevU = String(prevDb).trim().toUpperCase();
-            if (revU.charCodeAt(0) !== prevU.charCodeAt(0) + 1) {
-              conflicts.set(id, `Invalid progression from '${prevU}' to '${revU}'`);
-            }
-            return; // handled via DB
-          }
-          // No DB prev: validate within-batch minimal continuity
-          if (revU === 'A') return; // first allowed
-          const prevLetter = String.fromCharCode(revU.charCodeAt(0) - 1);
-          if (!letterSet.has(prevLetter)) {
-            conflicts.set(id, `Missing previous revision ${prevLetter} before ${revU}`);
-          }
-        } else if (isNumber(revRaw)) {
-          if (prevDb && /^\d+$/.test(String(prevDb))) {
-            const prevNum = Number(prevDb);
-            const curNum = Number(revRaw);
-            if (curNum !== prevNum + 1) {
-              conflicts.set(id, `Invalid progression from '${prevDb}' to '${revRaw}'`);
-            }
-            return; // handled via DB
-          }
-          // No DB prev: allow 1 as starting point; otherwise ensure immediate previous number exists in batch
-          const curNum = Number(revRaw);
-          if (curNum === 1) return;
-          if (!numberSet.has(String(curNum - 1))) {
-            conflicts.set(id, `Missing previous revision ${curNum - 1} before ${curNum}`);
-          }
-        } else {
-          // Unknown format – flag softly
-          conflicts.set(id, `Unrecognized revision '${revRaw}'`);
-        }
-      });
-    }
-
-    // Also compare against previous revision from DB for selected package (normalized DrgNo + category)
-    const isValidStep = (prev, next) => {
-      const p = (prev ?? '').toString().trim();
-      const n = (next ?? '').toString().trim();
-      if (!p && !n) return true; // nothing provided
-      if (!p && n) return n.toUpperCase() === 'A' || (isNumber(n) && Number(n) === 1);
-      if (!n) return true; // don't flag empty new rev as conflict here
-      if (isLetter(p) && isLetter(n)) return n.toUpperCase().charCodeAt(0) === p.toUpperCase().charCodeAt(0) + 1;
-      if (isNumber(p) && isNumber(n)) return Number(n) === Number(p) + 1;
-      return true;
-    };
-    safeArr(drawings).forEach((row) => {
-      if (!row?.id) return;
-      const dr = row?.drgNo ?? row?.drawingNo;
-      if (!dr) return;
-      const catKeyRaw = row?.category ?? '';
-      const { normDr, normCat } = normalizeDrawingKey(dr, catKeyRaw);
-      const prev = prevRevMap?.[`${normDr}::${normCat}`] ?? prevRevMap?.[normDr] ?? '';
-      const next = row?.rev ?? '';
-      if (!conflicts.has(row.id) && !isValidStep(prev, next)) {
-        conflicts.set(row.id, `Invalid progression from '${prev || '-'}' to '${next || '-'}'`);
-      }
-    });
-
-    return conflicts; // Map of id -> message
-  }, [drawings, prevRevMap, prevRevLoading, prevRevHasFetched, selectedProjectId, selectedPackageId]);
-
   /* ====== Project pickers (same as Code #1) ====== */
   const handleProjectChange = useCallback((e) => {
     const selectedRaw = e.target.value;
@@ -505,6 +314,7 @@ const PublishDrawing = () => {
       projectNo: selectedProject ? (selectedProject.projectNo ?? selectedProject.id) : selectedRaw,
       projectName: selectedProject ? (selectedProject.name || selectedProject.projectName || '') : '',
     });
+<<<<<<< HEAD
 
     // Resolve numeric project id
     const pidNum = selectedProject && selectedProject.id != null ? Number(selectedProject.id) : NaN;
@@ -525,6 +335,8 @@ const PublishDrawing = () => {
       setSelectedPackageId('');
       setSelectedPackage(null);
     }
+=======
+>>>>>>> 1898a88e5a98287a4570bdec93f1ea622b623f6f
   }, [projects]);
 
   React.useEffect(() => {
@@ -554,78 +366,22 @@ const PublishDrawing = () => {
           try { clist = await cres.value.json(); } catch { clist = []; }
         }
 
-  if (mounted) setAllProjects(plist || []);
+        if (mounted) setAllProjects(plist || []);
 
-        // Decide base projects for this user:
-        // 1) If user has any projects where solTLId === user.id, treat as TL-mode (regardless of userType label)
-        const tlIdNum = Number(udata?.id);
-        const tlProjects = (plist || []).filter(p => Number(p?.solTLId || p?.solTL?.id) === tlIdNum);
-        if ((udata && String(udata.userType || '').toLowerCase() !== 'admin') && tlProjects.length > 0) {
-          const base = tlProjects;
-          const tlClientIds = new Set(base.map(p => Number(p?.clientId || p?.client?.id)).filter(Boolean));
-          let tlClientsArr = (clist || []).filter(c => tlClientIds.has(Number(c.id)));
-          // Fallback: infer clients directly from projects if clients API is empty or filtering yields none
-          if (!tlClientsArr.length) {
-            const seen = new Set();
-            tlClientsArr = base.map(p => {
-              const id = Number(p?.clientId || p?.client?.id);
-              const name = (p?.client?.name) || `Client ${id}`;
-              return id ? { id, name } : null;
-            }).filter(Boolean).filter(c => {
-              if (seen.has(c.id)) return false; seen.add(c.id); return true;
-            });
-          }
-          if (mounted) {
-            setBaseProjects(base);
-            setClients(tlClientsArr);
-            // Auto-select first client and filter projects accordingly
-            const firstId = tlClientsArr.length ? Number(tlClientsArr[0].id) : null;
-            setSelectedClientId(firstId);
-            setStoreSelectedClientId(firstId);
-            setProjects(firstId != null ? base.filter(p => Number(p.clientId) === firstId || Number(p?.client?.id) === firstId || Number(p?.ownerId) === firstId) : base);
-          }
-        } else if (udata && String(udata.userType || '').toLowerCase() !== 'admin') {
-          // 2) Client-mode: if user tied to a client, show only that client's projects
-          const cid = udata.clientId || udata.client?.id || null;
-          const base = cid != null ? (plist || []).filter(p => Number(p.clientId) === Number(cid) || Number(p?.client?.id) === Number(cid) || Number(p?.ownerId) === Number(cid)) : (plist || []);
-          if (mounted) {
-            setBaseProjects(base);
-            // If clients API empty, infer clients from base
-            if (clist && clist.length) setClients(clist);
-            else {
-              const seen = new Set();
-              const inferred = base.map(p => {
-                const id = Number(p?.clientId || p?.client?.id);
-                const name = (p?.client?.name) || `Client ${id}`;
-                return id ? { id, name } : null;
-              }).filter(Boolean).filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
-              setClients(inferred);
-            }
-            setSelectedClientId(cid != null ? Number(cid) : null);
-            setProjects(base);
-          }
-        } else {
-          // 3) Admin: all
-          if (mounted) {
-            setBaseProjects(plist || []);
-            if (clist && clist.length) setClients(clist);
-            else {
-              const seen = new Set();
-              const inferred = (plist || []).map(p => {
-                const id = Number(p?.clientId || p?.client?.id);
-                const name = (p?.client?.name) || `Client ${id}`;
-                return id ? { id, name } : null;
-              }).filter(Boolean).filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
-              setClients(inferred);
-            }
-            setProjects(plist || []);
-          }
+        if (udata && udata.userType && String(udata.userType).toLowerCase() !== 'admin') {
+          const clientId = udata.clientId || udata.client?.id || udata.id;
+          plist = (plist || []).filter(p => (
+            p.clientId === clientId || (p.client && p.client.id === clientId) || p.ownerId === clientId
+          ));
+          if (mounted) setSelectedClientId(clientId);
         }
+
+        if (mounted) setClients(clist || []);
         if (mounted) setUser(udata);
 
-        if (selectedClientId != null && udata && udata.userType && String(udata.userType).toLowerCase() !== 'admin') {
+        if (selectedClientId && udata && udata.userType && String(udata.userType).toLowerCase() !== 'admin') {
           plist = (plist || []).filter(p =>
-            Number(p.clientId) === Number(selectedClientId) || Number(p?.client?.id) === Number(selectedClientId) || Number(p?.ownerId) === Number(selectedClientId)
+            p.clientId === selectedClientId || (p.client && p.client.id === selectedClientId) || p.ownerId === selectedClientId
           );
         }
 P
@@ -643,6 +399,7 @@ P
   }, []);
 
   React.useEffect(() => {
+<<<<<<< HEAD
     if (selectedClientId == null || String(selectedClientId) === '') { setProjects(baseProjects || []); return; }
     const cid = String(selectedClientId);
     // Try server-side filtered list first
@@ -659,6 +416,18 @@ P
       setProjects(filtered.length ? filtered : (baseProjects || []));
     })();
   }, [selectedClientId, baseProjects]);
+=======
+    if (selectedClientId == null) { setProjects(allProjects || []); return; }
+    const cid = Number(selectedClientId);
+    const filtered = (allProjects || []).filter(p => {
+      const pid = Number(p.clientId);
+      const pcid = Number(p?.client?.id);
+      const owner = Number(p?.ownerId);
+      return pid === cid || pcid === cid || owner === cid;
+    });
+    setProjects(filtered);
+  }, [selectedClientId, allProjects]);
+>>>>>>> 1898a88e5a98287a4570bdec93f1ea622b623f6f
 
   /* ====== Extras / 3D: stage locally ONLY (no cloud here) ====== */
   const handleFileChange = useCallback((e, type) => {
@@ -677,7 +446,7 @@ P
         uploadedAt: new Date().toISOString(),
         file,          // keep actual File to put in ZIP later
       }));
-      
+
       // Directly add to the main tables instead of pending
       if (type === 'Extras') {
         const merged = [...safeArr(extras), ...staged];
@@ -690,7 +459,7 @@ P
         console.log('Setting models to:', result);
         setModels(result);
       }
-      
+
       setSelectedAttachmentRows(new Set());
     }
 
@@ -791,6 +560,15 @@ P
         const detailerIndex = header.findIndex((col) => col.includes("dr by"));
         const checkerIndex = header.findIndex((col) => col.includes("ch by"));
         const categoryIndex = header.findIndex((col) => col.includes("category"));
+        const finishIndex = header.findIndex((col) => col.includes("finish")); // ✅ added
+
+        const sheetSizeIndex = header.findIndex(
+          (col) =>
+            col.includes("drg'size") ||
+            col.includes("drg size") ||
+            col.includes("sheet size") ||
+            col.includes("size")
+        );
 
         const rows = data.slice(headerIndex + 1).filter((row) => row.length);
 
@@ -800,11 +578,15 @@ P
           drgNo: row[drgNoIndex] || "-",
           item: row[itemIndex] || "-",
           rev: row[revIndex] !== undefined && row[revIndex] !== null && row[revIndex] !== "" ? String(row[revIndex]) : "-",
+          finish: row[finishIndex] || "-",            // ✅ added
           modeler: row[modelerIndex] || "-",
           detailer: row[detailerIndex] || "-",
           checker: row[checkerIndex] || "-",
+          modBy: row[modelerIndex] || "-",            // ✅ added (same as modeler column)
+          revRemarks: row[statusIndex] || "-",       // ✅ added
           status: row[statusIndex] || "-",
           category: row[categoryIndex] || "",
+          sheetSize: row[sheetSizeIndex] || "-",
           view: "View",
           attachedPdfs: [],
           conflict: "--- No approval sent before",
@@ -1046,89 +828,191 @@ P
   }, []);
 
   /* ====== Approve ====== */
-  const handleSubmit = useCallback(() => {
-    if (!useDrawingStore.getState().projectNo || !useDrawingStore.getState().projectName) {
-      alert("Please select a project first.");
-      return;
-    }
-    const selectedDrawings = drawings.filter((d) => selectedRows.has(d.id));
-    const allAttachments = [...safeArr(extras), ...safeArr(models)];
-    const selectedAttachments = allAttachments.filter((a) => selectedAttachmentRows.has(a.id));
-    const selectedExtras = selectedAttachments.filter(a => a.fileType === 'Extras' || a.fileType === 'Extra');
-    const selectedModels = selectedAttachments.filter(a => a.fileType === '3D Model');
+  // const handleSubmit = useCallback(() => {
+  //   const { projectNo, projectName } = useDrawingStore.getState();
 
-    if (selectedDrawings.length + selectedExtras.length + selectedModels.length === 0) {
-      alert("Please select at least one item (Drawing/Extra/3D Model) to approve.");
-      return;
-    }
-    setProjectDetails(useDrawingStore.getState().projectName, useDrawingStore.getState().projectNo);
-    setApprovedDrawings(selectedDrawings);
-    setApprovedExtras(selectedExtras);
-    setApprovedModels(selectedModels);
-    router.push("/dashboard/project/project/publish_drawings/hybrid_publish_drawings");
-  }, [drawings, extras, models, selectedRows, selectedAttachmentRows, setProjectDetails, setApprovedDrawings, setApprovedExtras, setApprovedModels, router]);
+  //   // 🚨 Project must be selected
+  //   if (!projectNo || !projectName) {
+  //     alert("Please select a project first.");
+  //     return;
+  //   }
+
+  //   const selectedDrawings = drawings.filter((d) => selectedRows.has(d.id));
+  //   const allAttachments = [...safeArr(extras), ...safeArr(models)];
+  //   const selectedAttachments = allAttachments.filter((a) => selectedAttachmentRows.has(a.id));
+  //   const selectedExtras = selectedAttachments.filter(
+  //     (a) => a.fileType === "Extras" || a.fileType === "Extra"
+  //   );
+  //   const selectedModels = selectedAttachments.filter((a) => a.fileType === "3D Model");
+
+  //   if (selectedDrawings.length + selectedExtras.length + selectedModels.length === 0) {
+  //     alert("Please select at least one item (Drawing/Extra/3D Model) to approve.");
+  //     return;
+  //   }
+
+  //   // 🚨 Check if any selected drawing has no attached PDF
+  //   const missingPdf = selectedDrawings.filter(
+  //     (d) => !d.attachedPdfs || d.attachedPdfs.length === 0
+  //   );
+
+  //   if (missingPdf.length > 0) {
+  //     alert(
+  //       "Please attach file with that (DrgNo.):\n\n" +
+  //       missingPdf.map((r) => `- ${r.drgNo}`).join("\n")
+  //     );
+  //     return; // ⛔ Stop navigation
+  //   }
+
+  //   // ✅ All good — proceed
+  //   setProjectDetails(projectName, projectNo);
+  //   setApprovedDrawings(selectedDrawings);
+  //   setApprovedExtras(selectedExtras);
+  //   setApprovedModels(selectedModels);
+  //   router.push("/dashboard/project/project/publish_drawings/hybrid_publish_drawings");
+  // }, [
+  //   drawings,
+  //   extras,
+  //   models,
+  //   selectedRows,
+  //   selectedAttachmentRows,
+  //   setProjectDetails,
+  //   setApprovedDrawings,
+  //   setApprovedExtras,
+  //   setApprovedModels,
+  //   router,
+  // ]);
+
+const handleSubmit = useCallback(() => {
+  const { projectNo, projectName } = useDrawingStore.getState();
+
+  // 🚨 Project must be selected
+  if (!projectNo || !projectName) {
+    alert("Please select a project first.");
+    return;
+  }
+
+  const selectedDrawings = drawings.filter((d) => selectedRows.has(d.id));
+  const allAttachments = [...safeArr(extras), ...safeArr(models)];
+  const selectedAttachments = allAttachments.filter((a) =>
+    selectedAttachmentRows.has(a.id)
+  );
+  const selectedExtras = selectedAttachments.filter(
+    (a) => a.fileType === "Extras" || a.fileType === "Extra"
+  );
+  const selectedModels = selectedAttachments.filter(
+    (a) => a.fileType === "3D Model"
+  );
+
+  // 🚨 Must select at least one checkbox
+  if (selectedRows.size === 0) {
+    alert("Please select at least one drawing before proceeding.");
+    return;
+  }
+
+  // 🚨 Must select at least one item (Drawing/Extra/3D Model)
+  if (
+    selectedDrawings.length + selectedExtras.length + selectedModels.length === 0
+  ) {
+    alert("Please select at least one item (Drawing/Extra/3D Model) to approve.");
+    return;
+  }
+
+  // 🚨 Block routing if any selected drawing has no PDF attached
+  const missingPdf = selectedDrawings.filter(
+    (d) => !d.attachedPdfs || d.attachedPdfs.length === 0
+  );
+
+  if (missingPdf.length > 0) {
+    alert(
+      "Please attach PDF file(s) for the following drawing(s):\n\n" +
+        missingPdf.map((r) => `- ${r.drgNo || r.drawingNo}`).join("\n")
+    );
+    return; // ⛔ Prevent routing
+  }
+
+  // ✅ All good — proceed to publish
+  setProjectDetails(projectName, projectNo);
+  setApprovedDrawings(selectedDrawings);
+  setApprovedExtras(selectedExtras);
+  setApprovedModels(selectedModels);
+
+  router.push("/dashboard/project/project/publish_drawings/hybrid_publish_drawings");
+}, [
+  drawings,
+  extras,
+  models,
+  selectedRows,
+  selectedAttachmentRows,
+  setProjectDetails,
+  setApprovedDrawings,
+  setApprovedExtras,
+  setApprovedModels,
+  router,
+]);
+
+
 
   /* ====== ZIP creation (Code #2 behavior) ======
      - Drawings -> Drawing/<Shop|Erection|Part|Other>/
      - Extras & 3D -> <EXT>/ at ZIP root (PDF, DWG, STEP, ...)
      - Excel -> Drawing/Excel/<EXT>/
   */
-  const handleDownloadAllFiles = useCallback(async () => {
-    const zip = new JSZip();
-    const rootFolder = zip.folder("Drawing");
+  // const handleDownloadAllFiles = useCallback(async () => {
+  //   const zip = new JSZip();
+  //   const rootFolder = zip.folder("Drawing");
 
-    const getCategoryFolder = (cat) => {
-      const c = String(cat || '').trim();
-      if (c === "A") return "Shop Drawings";
-      if (c === "G") return "Erection Drawings";
-      if (c === "W") return "Part Drawings";
-      return "Other Drawings";
-    };
+  //   const getCategoryFolder = (cat) => {
+  //     const c = String(cat || '').trim();
+  //     if (c === "A") return "Shop Drawings";
+  //     if (c === "G") return "Erection Drawings";
+  //     if (c === "W") return "Part Drawings";
+  //     return "Other Drawings";
+  //   };
 
-    // 1) Drawings into category subfolders
-    safeArr(drawings).forEach(d => {
-      if (d.attachedPdfs && d.attachedPdfs.length) {
-        const folderName = getCategoryFolder(d.category?.toString().trim());
-        const subFolder = rootFolder && rootFolder.folder(folderName);
-        d.attachedPdfs.forEach(file => {
-          const f = file?.file || file;
-          if (f instanceof File) {
-            subFolder && subFolder.file(f.name, f);
-          }
-        });
-      }
-    });
+  //   // 1) Drawings into category subfolders
+  //   safeArr(drawings).forEach(d => {
+  //     if (d.attachedPdfs && d.attachedPdfs.length) {
+  //       const folderName = getCategoryFolder(d.category?.toString().trim());
+  //       const subFolder = rootFolder && rootFolder.folder(folderName);
+  //       d.attachedPdfs.forEach(file => {
+  //         const f = file?.file || file;
+  //         if (f instanceof File) {
+  //           subFolder && subFolder.file(f.name, f);
+  //         }
+  //       });
+  //     }
+  //   });
 
-    // 2) Extras & 3D at ZIP root grouped by extension
-    const addToZipByExtensionAtRoot = (filesArray) => {
-      const list = safeArr(filesArray);
-      if (!list.length) return;
-      list.forEach((entry) => {
-        const f = entry?.file || (entry instanceof File ? entry : null);
-        if (!f) return;
-        const ext = (f.name.split('.').pop() || "UNKNOWN").toUpperCase();
-        const extFolder = zip.folder(ext);
-        extFolder && extFolder.file(f.name, f);
-      });
-    };
-    addToZipByExtensionAtRoot(extras);
-    addToZipByExtensionAtRoot(models);
+  //   // 2) Extras & 3D at ZIP root grouped by extension
+  //   const addToZipByExtensionAtRoot = (filesArray) => {
+  //     const list = safeArr(filesArray);
+  //     if (!list.length) return;
+  //     list.forEach((entry) => {
+  //       const f = entry?.file || (entry instanceof File ? entry : null);
+  //       if (!f) return;
+  //       const ext = (f.name.split('.').pop() || "UNKNOWN").toUpperCase();
+  //       const extFolder = zip.folder(ext);
+  //       extFolder && extFolder.file(f.name, f);
+  //     });
+  //   };
+  //   addToZipByExtensionAtRoot(extras);
+  //   addToZipByExtensionAtRoot(models);
 
-    // 3) Excel files inside Drawing/Excel/<EXT>/
-    if (uploadedExcelFiles && uploadedExcelFiles.length) {
-      const excelBase = rootFolder && rootFolder.folder("Excel");
-      uploadedExcelFiles.forEach((f) => {
-        if (!f) return;
-        const ext = (f.name.split('.').pop() || "UNKNOWN").toUpperCase(); // XLS / XLSX
-        const excelExtFolder = excelBase && excelBase.folder(ext);
-        (excelExtFolder || excelBase || rootFolder || zip).file(f.name, f);
-      });
-    }
+  //   // 3) Excel files inside Drawing/Excel/<EXT>/
+  //   if (uploadedExcelFiles && uploadedExcelFiles.length) {
+  //     const excelBase = rootFolder && rootFolder.folder("Excel");
+  //     uploadedExcelFiles.forEach((f) => {
+  //       if (!f) return;
+  //       const ext = (f.name.split('.').pop() || "UNKNOWN").toUpperCase(); // XLS / XLSX
+  //       const excelExtFolder = excelBase && excelBase.folder(ext);
+  //       (excelExtFolder || excelBase || rootFolder || zip).file(f.name, f);
+  //     });
+  //   }
 
-    const content = await zip.generateAsync({ type: "blob" });
-    saveAs(content, "Drawing.zip");
-    alert("Download completed!");
-  }, [drawings, extras, models, uploadedExcelFiles]);
+  //   const content = await zip.generateAsync({ type: "blob" });
+  //   saveAs(content, "Drawing.zip");
+  //   alert("Download completed!");
+  // }, [drawings, extras, models, uploadedExcelFiles]);
 
   /* ====== Table renderers (same UX as Code #1) ====== */
   const renderTable = useCallback((files = [], isDrawing = false, selection = null, onCheck = null) => {
@@ -1172,7 +1056,7 @@ P
           </div>
         );
       }
-      
+
       // Default empty state for other cases
       return (
         <div className="text-center text-red-600 font-semibold py-2">
@@ -1188,8 +1072,8 @@ P
       if (!isDrawing) return normalized;
       const withIndex = normalized.map((f, i) => ({ f, i }));
       withIndex.sort((a, b) => {
-        const aConflict = revisionConflicts.has(a.f?.id);
-        const bConflict = revisionConflicts.has(b.f?.id);
+        const aConflict = Array.isArray(a.f?.attachedPdfs) && a.f.attachedPdfs.some(pdf => a.f.rev !== undefined && !checkRevisionMatch(a.f.rev, pdf.name));
+        const bConflict = Array.isArray(b.f?.attachedPdfs) && b.f.attachedPdfs.some(pdf => b.f.rev !== undefined && !checkRevisionMatch(b.f.rev, pdf.name));
         if (aConflict !== bConflict) return aConflict ? -1 : 1;
 
         const aHasAttachment = Array.isArray(a.f?.attachedPdfs) && a.f.attachedPdfs.length > 0;
@@ -1224,7 +1108,6 @@ P
                   <th className="border px-2 py-1">DrgNo.</th>
                   <th className="border px-2 py-1">Item</th>
                   <th className="border px-2 py-1">Rev</th>
-                  <th className="border px-2 py-1">Prev Rev</th>
                   <th className="border px-2 py-1">Modeler</th>
                   <th className="border px-2 py-1">Detailer</th>
                   <th className="border px-2 py-1">Checker</th>
@@ -1248,13 +1131,9 @@ P
           </thead>
           <tbody>
             {viewFiles.map((file, index) => {
-              const hasRevisionConflict = isDrawing && revisionConflicts.has(file?.id);
-              const revMessage = isDrawing ? (revisionConflicts.get(file?.id) || '') : '';
-              // Resolve prev revision for this drawing+category
-              const dr = isDrawing ? (file?.drgNo ?? file?.drawingNo ?? '-') : '-';
-              const catKeyRaw = file?.category ?? '';
-              const { normDr, normCat } = normalizeDrawingKey(dr, catKeyRaw);
-              const prevRev = prevRevMap[`${normDr}::${normCat}`] ?? prevRevMap[normDr] ?? '';
+              const hasRevisionConflict = isDrawing && Array.isArray(file?.attachedPdfs) && file.attachedPdfs.some(pdf => {
+                return pdf && pdf.name && !checkRevisionMatch(file.rev, pdf.name);
+              });
 
               return (
                 <tr key={file.id || `${file.name}-${index}`} className={`text-center text-sm ${hasRevisionConflict ? 'bg-yellow-100' : ''}`}>
@@ -1278,7 +1157,6 @@ P
                       <td className="border px-2 py-1">{isParsed ? file.drgNo : file.name}</td>
                       <td className="border px-2 py-1">{file.item || "-"}</td>
                       <td className="border px-2 py-1">{file.rev === "0" ? "0" : (file.rev || "-")}</td>
-                      <td className="border px-2 py-1">{prevRev || (prevRevLoading ? '...' : '-')}</td>
                       <td className="border px-2 py-1">{file.modeler || "-"}</td>
                       <td className="border px-2 py-1">{file.detailer || "-"}</td>
                       <td className="border px-2 py-1">{file.checker || "-"}</td>
@@ -1298,11 +1176,11 @@ P
                         View
                       </td>
                       <td className="border px-2 py-1">
-                        {hasRevisionConflict ? (
-                          <span className="text-red-600 text-xs font-semibold" title={revMessage}>
-                            {revMessage}
+                        {hasRevisionConflict && (
+                          <span className="text-red-600 text-xs font-semibold">
+                            Version don't match
                           </span>
-                        ) : null}
+                        )}
                       </td>
                       <td className="border px-2 py-1">
                         <textarea
@@ -1346,7 +1224,7 @@ P
         </table>
       </div>
     );
-  }, [openModal, drawings, setDrawings, prevRevMap, prevRevLoading, revisionConflicts]);
+  }, [openModal, drawings, setDrawings]);
 
   const handleDeleteSelected = useCallback(() => {
     const updated = drawings
@@ -1364,8 +1242,9 @@ P
       <div className="flex items-center space-x-4 mb-2">
         <label className="font-semibold">Client</label>
         <select
-          value={selectedClientId != null ? String(selectedClientId) : ''}
+          value={selectedClientId || ''}
           onChange={(e) => {
+<<<<<<< HEAD
             const raw = e.target.value;
             const localId = raw || null; // hold as string for robust equality checks
             setSelectedClientId(localId);
@@ -1385,9 +1264,16 @@ P
                 const owner = String(p?.ownerId ?? '');
                 return pid === localId || pcid === localId || owner === localId;
               });
+=======
+            const val = e.target.value || null;
+            setSelectedClientId(val);
+            setStoreSelectedClientId(val); // Store in Zustand for TransmittalForm
+            if (val) {
+              const filtered = (projects || []).filter(p => p.clientId === val || (p.client && p.client.id === val) || p.ownerId === val);
+>>>>>>> 1898a88e5a98287a4570bdec93f1ea622b623f6f
               setProjects(filtered);
             } else {
-              setProjects(baseProjects || []);
+              fetch('/api/projects').then(r => r.ok ? r.json() : []).then(j => setProjects(j)).catch(() => { });
             }
           }}
           className="border rounded-md px-2 py-1 text-sm"
@@ -1395,7 +1281,7 @@ P
         >
           <option value="">{loadingClients ? 'Loading Clients...' : 'Select Client'}</option>
           {clients.map((c) => (
-            <option key={c.id} value={String(c.id)}>{c.name || c.clientName || c.id}</option>
+            <option key={c.id} value={c.id}>{c.name || c.clientName || c.id}</option>
           ))}
         </select>
 
@@ -1415,6 +1301,7 @@ P
           ))}
         </select>
 
+<<<<<<< HEAD
         {/* Package selector */}
         <label className="font-semibold">Package</label>
         <select
@@ -1466,6 +1353,8 @@ P
           Previous
         </button>
 
+=======
+>>>>>>> 1898a88e5a98287a4570bdec93f1ea622b623f6f
         <label className="font-semibold">Project Name</label>
         <input
           type="text"
@@ -1628,7 +1517,7 @@ P
                     className="file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-amber-700 file:text-white hover:file:bg-amber-800"
                   />
                 </div>
-                <div className="flex items-center gap-2">
+                {/* <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-700">3D Model:</span>
                   <input
                     type="file"
@@ -1637,7 +1526,7 @@ P
                     ref={modelInputRef}
                     className="file:mr-2 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-fuchsia-700 file:text-white hover:file:bg-fuchsia-800"
                   />
-                </div>
+                </div> */}
               </div>
 
 
@@ -1657,12 +1546,7 @@ P
 
       {/* Bottom Left Buttons */}
       <div className="mt-4 flex justify-start">
-        <button
-          onClick={handleDownloadAllFiles}
-          className="bg-teal-800 text-white px-4 py-2 rounded text-sm mr-2"
-        >
-          Download Drawing
-        </button>
+
         <button
           onClick={handleSubmit}
           className="bg-teal-800 text-white px-4 py-2 rounded text-sm"
@@ -1731,64 +1615,6 @@ P
               <button onClick={closeModal} className="bg-gray-400 text-white px-4 py-1 text-sm rounded">
                 Cancel
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Previous submissions Modal */}
-      {prevOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-          <div className="bg-white border rounded-md w-[720px] p-4 shadow-lg relative">
-            <button
-              onClick={() => setPrevOpen(false)}
-              className="absolute top-0 right-0 bg-red-600 text-white px-2 py-1 text-xs rounded-bl-md"
-            >
-              ✕
-            </button>
-            <div className="mb-3">
-              <div className="text-sm font-semibold">Previous submissions for package {String(selectedPackageId || '')}</div>
-              {prevLoading && <div className="text-xs text-gray-600 mt-1">Loading...</div>}
-              {prevError && <div className="text-xs text-red-600 mt-1">{prevError}</div>}
-            </div>
-            <div className="max-h-[60vh] overflow-auto border rounded">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-cyan-800 text-white">
-                    <th className="text-left px-2 py-1">#</th>
-                    <th className="text-left px-2 py-1">Drawing No</th>
-                    <th className="text-left px-2 py-1">Revision</th>
-                    <th className="text-left px-2 py-1">Category</th>
-                    <th className="text-left px-2 py-1">Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!prevLoading && (!prevRows || prevRows.length === 0) && (
-                    <tr>
-                      <td colSpan="5" className="text-center text-red-600 py-3">No previous submissions found</td>
-                    </tr>
-                  )}
-                  {Array.isArray(prevRows) && prevRows.map((row, idx) => {
-                    const dr = row?.drawingNumber ?? row?.drgNo ?? row?.drg_no ?? '-';
-                    const rev = row?.revision ?? row?.rev ?? '-';
-                    const cat = row?.category ?? row?.Category ?? '';
-                    const upd = row?.updatedAt || row?.updated_at || row?.lastAttachedAt || row?.lastattachedat || null;
-                    const updStr = upd ? new Date(upd).toLocaleString() : '-';
-                    return (
-                      <tr key={row.id || idx} className="odd:bg-gray-50">
-                        <td className="px-2 py-1">{idx + 1}</td>
-                        <td className="px-2 py-1">{String(dr)}</td>
-                        <td className="px-2 py-1">{String(rev)}</td>
-                        <td className="px-2 py-1">{String(cat)}</td>
-                        <td className="px-2 py-1">{updStr}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex justify-end mt-3">
-              <button onClick={() => setPrevOpen(false)} className="bg-gray-500 text-white px-3 py-1 text-sm rounded">Close</button>
             </div>
           </div>
         </div>

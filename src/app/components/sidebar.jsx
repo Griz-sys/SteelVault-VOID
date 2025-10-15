@@ -199,7 +199,7 @@ export default function Sidebar({ initialUserType = null }) {
             />
             <SidebarItem
               label="Send Drawings Submittal"
-              href="src/app/components/ProjectComponent/SendDrawingsSubmittals.jsx"
+              href="/dashboard/project/project/send_drawings_submittals"
             />
             
           </CollapsibleGroup>

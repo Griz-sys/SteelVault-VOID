@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import JSZip from "jszip";
 import { saveAs } from 'file-saver';
 import { uploadToGCSDirect } from '@/lib/uploadToGCS';
@@ -13,10 +13,25 @@ import { useRouter } from 'next/navigation';
 
 const TransmittalForm = () => {
   // Zustand store
-  const { selectedDrawings, approvedDrawings, drawings: storeDrawings, approvedExtras, approvedModels, projectName, projectNo, selectedClientId, selectedProjectId, selectedPackageId, selectedPackageName, transmittalName, submittalName, zipName, generateLogName, clearLogName, setZipName } = useDrawingStore();
+  const {
+    selectedDrawings,
+    zipName,
+    revRemarks,
+    approvedDrawings,
+    approvedExtras,
+    approvedModels,
+    projectName,
+    projectNo,
+    selectedClientId,
+    transmittalName,
+    submittalName,
+    generateLogName,
+    sequenceNo,
+    clearLogName,
+  } = useDrawingStore();
 
-    const router = useRouter();
-  
+  const router = useRouter();
+
   // Modal state for viewing attachments
   const [showModal, setShowModal] = useState(false);
   const [modalFiles, setModalFiles] = useState([]);
@@ -26,10 +41,9 @@ const TransmittalForm = () => {
   const [publishResult, setPublishResult] = useState(null);
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  // Email fields
-  const [toEmails, setToEmails] = useState('');
-  const [emailSubject, setEmailSubject] = useState('');
-  const [emailBody, setEmailBody] = useState('');
+  const [transmittalChecked, setTransmittalChecked] = useState(false);
+  const [submittalChecked, setSubmittalChecked] = useState(false);
+
 
   // Date logic from HybridPublishDrawings
   const today = new Date().toISOString().slice(0, 10);
@@ -43,7 +57,7 @@ const TransmittalForm = () => {
       // don't override if user already typed
       if (ref.current.value && String(ref.current.value).trim().length > 0) return;
       if (val == null) return;
-      try { ref.current.value = String(val); } catch {}
+      try { ref.current.value = String(val); } catch { }
     };
 
     const resolveAndFill = async () => {
@@ -113,7 +127,7 @@ const TransmittalForm = () => {
   }, [selectedClientId]);
 
   // Map approvedDrawings to the table format you need, with date logic
-const tableDrawings = selectedDrawings.map((d, i) => {
+  const tableDrawings = selectedDrawings.map((d, i) => {
     const rev = d.rev || '';
     const isNumericRev = /^\d+$/.test(rev);
     const isAlphaRev = /^[a-zA-Z]+$/.test(rev);
@@ -128,12 +142,15 @@ const tableDrawings = selectedDrawings.map((d, i) => {
       dateSentForFab: isNumericRev ? today : (d.fabDate || d.dateSentForFab || ''),
       remark: d.remark || (d.void ? 'For Approval [VOID]' : 'For Approval'),
       void: d.void || false,
-      detailer: d.detailer || 'AHE',
-      checker: d.checker || 'SOH',
-      sheetSize: d.sheetSize || (i === 3 || i === 4 ? '18x24' : '11x17'),
-      itemQty: i === 0 || i === 2 ? '2' : i === 1 ? '1' : '1', // Default to 1
+      detailer: d.detailer || '',
+      checker: d.checker || '',
+      finish: d.finish || '',       // ✅ Excel only
+      modBy: d.modBy || '',         // ✅ Excel only
+      revRemarks: d.revRemarks || '', // ✅ Excel only
+      sheetSize: d.sheetSize || '', // ✅ Excel only
+      itemQty: i === 0 || i === 2 ? '2' : '1',
       attachedPdfs: d.attachedPdfs || [],
-      category: d.category || '', // For ZIP folder
+      category: d.category || ''
     };
   });
 
@@ -145,528 +162,51 @@ const tableDrawings = selectedDrawings.map((d, i) => {
   const teamLeaderRef = useRef();
   const zipNameRef = useRef();
 
-  // Download handler
-  // const handleDownload = async () => {
-  //   // --- Get header info values from refs ---
-  //   const fabricatorJobNo = jobNoRef.current?.value || '';
-  //   const fabricatorCoordinator = coordinatorRef.current?.value || '';
-  //   const solJobNo = solJobNoRef.current?.value || '';
-  //   const fabricatorName = fabricatorNameRef.current?.value || '';
-  //   const solTeamLeader = teamLeaderRef.current?.value || '';
-  //   const zipName = zipNameRef.current?.value || '';
+  const handleDownload = async () => {
+    // --- Get header info values from refs ---
+    const fabricatorJobNo = jobNoRef.current?.value || '';
+    const fabricatorCoordinator = coordinatorRef.current?.value || '';
+    const solJobNo = solJobNoRef.current?.value || '';
+    const fabricatorName = fabricatorNameRef.current?.value || '';
+    const solTeamLeader = teamLeaderRef.current?.value || '';
+    const zipFileName = zipName?.trim() || 'Drawing';
+    // --- Checkbox conditions ---
+    const isTransmittalChecked = document.getElementById("transmittal")?.checked;
+    const isSubmittalChecked = document.getElementById("submittal")?.checked;
 
-  //   // --- Calculate COUNT of drawings for "WE ARE SENDING YOU" section ---
-  //   let newItemForApprovalQty = 0;
-  //   let newItemForFabFieldQty = 0;
-  //   let deletedItemQty = 0;
-  //   let revisedItemForApprovalQty = 0; // Placeholder for future logic
-  //   let revisedItemForFabFieldQty = 0; // Placeholder for future logic
+    // --- Calculate COUNT of drawings ---
+    let newItemForApprovalQty = 0;
+    let newItemForFabFieldQty = 0;
+    let deletedItemQty = 0;
+    let revisedItemForApprovalQty = 0;
+    let revisedItemForFabFieldQty = 0;
 
-  //   tableDrawings.forEach(d => {
-  //     const hasDateSentForApproval = d.dateSentForApproval && d.dateSentForApproval.trim() !== '';
-  //     const hasDateSentForFab = d.dateSentForFab && d.dateSentForFab.trim() !== '';
+    tableDrawings.forEach(d => {
+      const hasDateSentForApproval = d.dateSentForApproval && d.dateSentForApproval.trim() !== '';
+      const hasDateSentForFab = d.dateSentForFab && d.dateSentForFab.trim() !== '';
 
-  //     if (d.void) {
-  //       deletedItemQty++;
-  //     } else if (hasDateSentForApproval) {
-  //       newItemForApprovalQty++;
-  //     } else if (hasDateSentForFab) {
-  //       newItemForFabFieldQty++;
-  //     }
-  //   });
-
-  //   const totalQty = tableDrawings.length;
-
-  //   // --- PDF EXPORT ---
-  //   const doc = new jsPDF('p', 'pt', 'a4');
-  //   let y = 40;
-
-  //   // --- Letterhead ---
-  //   doc.setFontSize(14);
-  //   doc.text('STRUCTURES ONLINE', 40, y);
-  //   doc.setFontSize(10);
-  //   doc.text('C 56A/27, Sec-62, Noida-201307', 40, y + 15);
-  //   doc.text('Tel:+911202403056, www.structuresonline.net', 40, y + 30);
-  //   doc.text('E:mail: mahesh_teli@sol-mail.net', 40, y + 45);
-
-  //   // --- Title ---
-  //   doc.setFontSize(16);
-  //   doc.text('LETTER OF TRANSMITTAL', 350, y + 10);
-
-  //   // --- Header Info Block from Form Inputs ---
-  //   y += 80;
-  //   const todayDate = new Date();
-  //   const formattedDate = `${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}-${todayDate.getFullYear()}`;
-
-  //   doc.setFontSize(10);
-  //   doc.setFont('helvetica', 'normal');
-
-  //   // Left column of header
-  //   doc.text(`TO: ${fabricatorName}`, 40, y);
-  //   doc.text(`ATTN: ${fabricatorCoordinator}`, 40, y + 15);
-  //   doc.text(`PROJECT NAME: ${projectName}`, 40, y + 30);
-
-  //   // Right column of header
-  //   doc.text(`DATE: ${formattedDate}`, 350, y);
-  //   doc.text(`TRANSMITTAL NO: 002`, 350, y + 15); // Hardcoded, can be made dynamic
-  //   doc.text(`FABRICATOR JOB NO: ${fabricatorJobNo}`, 350, y + 30);
-  //   doc.text(`ISSUED BY: ${solTeamLeader}`, 350, y + 45);
-  //   doc.text(`SEQUENCE NO:`, 350, y + 60); // Hardcoded, can be made dynamic
-  //   doc.text(`SOL JOB NO: ${solJobNo}`, 350, y + 75);
-
-  //   // --- "WE ARE SENDING YOU" Checklist Block ---
-  //   y += 100;
-  //   doc.setFontSize(10);
-  //   doc.text('WE ARE SENDING YOU:', 40, y);
-  //   y += 15;
-  //   doc.text('Drg Qty.', 60, y);
-  //   doc.text('Drg Qty.', 370, y);
-  //   y += 15;
-
-  //   // Left column checklist
-  //   doc.text(`[${newItemForApprovalQty > 0 ? 'X' : ' '}]`, 40, y);
-  //   doc.text(`${newItemForApprovalQty}`, 60, y);
-  //   doc.text('NEW ITEM FOR APPROVAL', 90, y);
-  //   y += 15;
-  //   doc.text(`[${newItemForFabFieldQty > 0 ? 'X' : ' '}]`, 40, y);
-  //   doc.text(`${newItemForFabFieldQty}`, 60, y);
-  //   doc.text('NEW ITEM FOR FAB/FIELD', 90, y);
-  //   y += 15;
-  //   doc.text(`[${deletedItemQty > 0 ? 'X' : ' '}]`, 40, y);
-  //   doc.text(`${deletedItemQty}`, 60, y);
-  //   doc.text('DELETED ITEM', 90, y);
-
-  //   // Reset Y for the right column to align
-  //   y -= 30;
-
-  //   // Right column checklist
-  //   doc.text(`[${revisedItemForApprovalQty > 0 ? 'X' : ' '}]`, 350, y);
-  //   doc.text(`${revisedItemForApprovalQty}`, 370, y);
-  //   doc.text('REVISED ITEM FOR APPROVAL', 400, y);
-  //   y += 15;
-  //   doc.text(`[${revisedItemForFabFieldQty > 0 ? 'X' : ' '}]`, 350, y);
-  //   doc.text(`${revisedItemForFabFieldQty}`, 370, y);
-  //   doc.text('REVISED ITEM FOR FAB/FIELD', 400, y);
-  //   y += 15;
-  //   doc.text('Total', 350, y);
-  //   doc.text(`${totalQty}`, 400, y);
-
-  //   // --- TRANSMITTAL REMARK Block ---
-  //   y += 40;
-  //   const remarkRectX = 35;
-  //   const remarkRectY = y;
-  //   const remarkRectWidth = 520;
-  //   const remarkTitleHeight = 20;
-  //   const remarkContentHeight = 30;
-
-  //   doc.setDrawColor(0);
-  //   doc.rect(remarkRectX, remarkRectY, remarkRectWidth, remarkTitleHeight + remarkContentHeight);
-  //   doc.line(remarkRectX, remarkRectY + remarkTitleHeight, remarkRectX + remarkRectWidth, remarkRectY + remarkTitleHeight);
-
-  //   doc.setFontSize(12);
-  //   doc.setFont('helvetica', 'bold');
-  //   doc.text('TRANSMITTAL REMARK', remarkRectX + (remarkRectWidth / 2), remarkRectY + (remarkTitleHeight / 2) + 4, { align: 'center' });
-
-  //   doc.setFontSize(10);
-  //   doc.setFont('helvetica', 'normal');
-  //   doc.text(zipName, remarkRectX + 5, remarkRectY + remarkTitleHeight + (remarkContentHeight / 2) + 3);
-
-  //   y = remarkRectY + remarkTitleHeight + remarkContentHeight;
-
-  //   // --- Drawings Table ---
-  //   y += 20;
-
-  //   // Group by description
-  //   const grouped = {};
-  //   tableDrawings.forEach(item => {
-  //     const desc = item.void ? `${item.desc} [VOID]` : item.desc;
-  //     if (!grouped[desc]) grouped[desc] = [];
-  //     grouped[desc].push(item.drawingNo);
-  //   });
-
-  //   const pdfTableHeaders = [['REV. REMARK', 'SHEET TITLE', 'SHEET NAME', 'SHEET QTY']];
-  //   const pdfTableData = Object.entries(grouped).map(([desc, drawingNos]) => [
-  //     'ISSUED FOR APPROVAL',
-  //     desc,
-  //     drawingNos.join(', '),
-  //     drawingNos.length
-  //   ]);
-
-  //   autoTable(doc, {
-  //     startY: y,
-  //     head: pdfTableHeaders,
-  //     body: pdfTableData,
-  //     styles: { fontSize: 10, cellPadding: 4 },
-  //     headStyles: { fillColor: [0, 112, 192] },
-  //     theme: 'grid'
-  //   });
-
-  //   // --- PDF as Blob ---
-  //   const pdfBlob = doc.output('blob');
-
-  //   // --- ZIP LOGIC ---
-  //   const zip = new JSZip();
-  //   const rootFolder = zip.folder("Drawing");
-
-  //   // Helper to get folder name by category
-  //   const getCategoryFolder = (cat) => {
-  //     if (cat === "A") return "Shop Drawings";
-  //     if (cat === "G") return "Erection Drawings";
-  //     if (cat === "W") return "Part Drawings";
-  //     return "Other Drawings";
-  //   };
-
-  //   // Add attached PDFs to category folders
-  //   (storeDrawings || []).forEach(d => {
-  //     if (d.attachedPdfs && d.attachedPdfs.length) {
-  //       const folderName = getCategoryFolder(d.category?.toString().trim());
-  //       const subFolder = rootFolder.folder(folderName);
-  //       d.attachedPdfs.forEach(file => {
-  //         const actualFile = file?.file || file;
-  //         subFolder.file(actualFile.name, actualFile);
-  //       });
-  //     }
-  //   });
-
-  //   // Add Extras and Models: each file goes in a folder named after its extension
-  //   const addToZipByExtension = (filesArray) => {
-  //     if (!filesArray || !filesArray.length) return;
-  //     filesArray.forEach((file) => {
-  //       if (!file?.file && !(file instanceof File)) return;
-  //       const actualFile = file?.file || file;
-  //       const ext = actualFile.name.split('.').pop()?.toUpperCase() || "UNKNOWN";
-  //       const extFolder = zip.folder(ext);
-  //       extFolder.file(actualFile.name, actualFile);
-  //     });
-  //   };
-  //   addToZipByExtension(extras);
-  //   addToZipByExtension(models);
-
-  //   // Add the PDF to the root of the ZIP
-  //   zip.file(`${zipName || 'Transmittal'}.pdf`, pdfBlob);
-
-  //   // Generate and download the ZIP
-  //   const content = await zip.generateAsync({ type: "blob" });
-  //   alert("Download completed!");
-  //   saveAs(content, `${zipName || 'Drawing'}.zip`);
-  // };
-
-const handleDownload = async () => {
-  // --- Get header info values from refs ---
-  const fabricatorJobNo = jobNoRef.current?.value || '';
-  const fabricatorCoordinator = coordinatorRef.current?.value || '';
-  const solJobNo = solJobNoRef.current?.value || '';
-  const fabricatorName = fabricatorNameRef.current?.value || '';
-  const solTeamLeader = teamLeaderRef.current?.value || '';
-  const zipName = zipNameRef.current?.value || '';
-
-  // --- Calculate COUNT of drawings for "WE ARE SENDING YOU" section ---
-  let newItemForApprovalQty = 0;
-  let newItemForFabFieldQty = 0;
-  let deletedItemQty = 0;
-  let revisedItemForApprovalQty = 0; 
-  let revisedItemForFabFieldQty = 0; 
-
-  tableDrawings.forEach(d => {
-    const hasDateSentForApproval = d.dateSentForApproval && d.dateSentForApproval.trim() !== '';
-    const hasDateSentForFab = d.dateSentForFab && d.dateSentForFab.trim() !== '';
-
-    if (d.void) {
-      deletedItemQty++;
-    } else if (hasDateSentForApproval) {
-      newItemForApprovalQty++;
-    } else if (hasDateSentForFab) {
-      newItemForFabFieldQty++;
-    }
-  });
-
-  const totalQty = tableDrawings.length;
-
-  // --- PDF EXPORT (unchanged) ---
-  const doc = new jsPDF('p', 'pt', 'a4');
-  let y = 40;
-
-  doc.setFontSize(14);
-  doc.text('STRUCTURES ONLINE', 40, y);
-  doc.setFontSize(10);
-  doc.text('C 56A/27, Sec-62, Noida-201307', 40, y + 15);
-  doc.text('Tel:+911202403056, www.structuresonline.net', 40, y + 30);
-  doc.text('E:mail: mahesh_teli@sol-mail.net', 40, y + 45);
-
-  doc.setFontSize(16);
-  doc.text('LETTER OF TRANSMITTAL', 350, y + 10);
-
-  // Minimal header content for PDF (reuse small subset)
-  y += 80;
-  const todayDate = new Date();
-  const formattedDate = `${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}-${todayDate.getFullYear()}`;
-  doc.setFontSize(10);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`PROJECT NAME: ${projectName}`, 40, y + 30);
-  doc.text(`DATE: ${formattedDate}`, 350, y);
-
-  // Table generation (same grouping logic)
-  let grouped = {};
-  const tableDrawings = selectedDrawings.map((d, i) => ({
-    drawingNo: d.drawingNo || d.drgNo || '-',
-    desc: d.itemName || d.item || '-',
-    void: d.void || false,
-  }));
-  tableDrawings.forEach(item => {
-    const desc = item.void ? `${item.desc} [VOID]` : item.desc;
-    if (!grouped[desc]) grouped[desc] = [];
-    grouped[desc].push(item.drawingNo);
-  });
-
-  const pdfTableHeaders = [['REV. REMARK', 'SHEET TITLE', 'SHEET NAME', 'SHEET QTY']];
-  const pdfTableData = Object.entries(grouped).map(([desc, drawingNos]) => [
-    'ISSUED FOR APPROVAL',
-    desc,
-    drawingNos.join(', '),
-    drawingNos.length
-  ]);
-
-  autoTable(doc, {
-    startY: y + 60,
-    head: pdfTableHeaders,
-    body: pdfTableData,
-    styles: { fontSize: 10, cellPadding: 4 },
-    headStyles: { fillColor: [0, 112, 192] },
-    theme: 'grid'
-  });
-
-  const pdfBlob = doc.output('blob');
-
-  // --- EXCEL EXPORT ---
-  const wb = XLSX.utils.book_new();
-  const headerSheetData = [
-    ["FABRICATOR JOB NO.:", fabricatorJobNo, "FABRICATOR NAME:", fabricatorName],
-    ["FABRICATOR CO-ORDINATOR:", fabricatorCoordinator, "SOL Team Leader:", solTeamLeader],
-    ["SOL JOB NO.:", solJobNo, "PROJECT NAME:", projectName],
-    [],
-    [
-      "S.No", "Description", "Drawing No", "Rev", "Date Sent for Approval",
-      "Date Received BFA", "Date Sent For Fab/Field", "Remark", "Detailer",
-      "Checker", "Sheet Size", "Item Qty"
-    ]
-  ];
-
-  const tableSheetData = tableDrawings.map((item, i) => [
-    i + 1,
-    item.void ? `${item.desc} [VOID]` : item.desc,
-    item.drawingNo,
-    item.rev,
-    item.dateSentForApproval,
-    item.dateReceivedBFA,
-    item.dateSentForFab,
-    item.remark,
-    item.detailer,
-    item.checker,
-    item.sheetSize,
-    item.itemQty
-  ]);
-
-  const finalSheetData = [...headerSheetData, ...tableSheetData];
-  const ws = XLSX.utils.aoa_to_sheet(finalSheetData);
-  XLSX.utils.book_append_sheet(wb, ws, "Transmittal");
-
-  const excelBlob = new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], {
-    type: "application/octet-stream",
-  });
-
-  // --- ZIP LOGIC ---
-  const zip = new JSZip();
-  const rootFolder = zip.folder("Drawing");
-
-  const getCategoryFolder = (cat) => {
-    if (cat === "A") return "Shop Drawings";
-    if (cat === "G") return "Erection Drawings";
-    if (cat === "W") return "Part Drawings";
-    return "Other Drawings";
-  };
-
-  (storeDrawings || []).forEach(d => {
-    if (d.attachedPdfs && d.attachedPdfs.length) {
-      const folderName = getCategoryFolder(d.category?.toString().trim());
-      const subFolder = rootFolder.folder(folderName);
-      d.attachedPdfs.forEach(file => {
-        const actualFile = file?.file || file;
-        subFolder.file(actualFile.name, actualFile);
-      });
-    }
-  });
-  const addToZipByExtension = (filesArray) => {
-    if (!filesArray || !filesArray.length) return;
-    filesArray.forEach((file) => {
-      if (!file?.file && !(file instanceof File)) return;
-      const actualFile = file?.file || file;
-      const ext = actualFile.name.split('.').pop()?.toUpperCase() || "UNKNOWN";
-      const extFolder = zip.folder(ext);
-      extFolder.file(actualFile.name, actualFile);
+      if (d.void) deletedItemQty++;
+      else if (hasDateSentForApproval) newItemForApprovalQty++;
+      else if (hasDateSentForFab) newItemForFabFieldQty++;
     });
-  };
-  addToZipByExtension(approvedExtras);
-  addToZipByExtension(approvedModels);
 
-  zip.file(`${zipName || 'Transmittal'}.pdf`, pdfBlob);
-  zip.file(`${zipName || 'Transmittal'}.xlsx`, excelBlob);
+    const totalQty = tableDrawings.length;
 
-  const content = await zip.generateAsync({ type: "blob" });
-  alert("Download completed!");
-  saveAs(content, `${zipName || 'Drawing'}.zip`);
-};
-
-// Publish: upsert to DB and upload the ZIP to storage
-const handlePublish = async () => {
-  const zipName = zipNameRef.current?.value || '';
-
-  try {
-    setUploadProgress(0);
-    setIsPublishing(true);
-
-    // Validate required data before creating files
-    let clientId = selectedClientId;
-    if (!clientId || !Number.isFinite(Number(clientId))) {
-      throw new Error('Please select a client in the PublishDrawing page before publishing.');
-    }
-
-    // Determine numeric projectId
-    let projectIdToSend = null;
-    try {
-      const pres = await fetch('/api/projects', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
-      if (pres.ok) {
-        const pj = await pres.json();
-        const found = (pj || []).find(p =>
-          String(p.projectNo) === String(projectNo) ||
-          String(p.name) === String(projectNo) ||
-          String(p.projectName) === String(projectNo) ||
-          String(p.id) === String(projectNo)
-        );
-        if (found) projectIdToSend = found.id;
-      }
-    } catch {}
-
-    if (!projectIdToSend || !Number.isFinite(Number(projectIdToSend))) {
-      throw new Error(`Unable to determine project ID from "${projectNo}".`);
-    }
-
-    // Confirm project & package before proceeding
-    const pkgDisplay = selectedPackageName || (selectedPackageId != null ? `#${selectedPackageId}` : 'None');
-    const confirmed = window.confirm(`Confirm publish to:\n- Project: ${projectName} (ID ${projectIdToSend})\n- Package: ${pkgDisplay}\n\nProceed?`);
-    if (!confirmed) { setIsPublishing(false); return; }
-
-    // Normalizers
-    const normalizeToken = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const stripFrTrSuffix = (token) => {
-      if (!token) return token;
-      const up = token.toUpperCase();
-      if (up.endsWith('FR') || up.endsWith('TR')) return up.slice(0, -2);
-      return up;
-    };
-    const normalizeCategory = (cat) => {
-      const c = String(cat || '').trim().toUpperCase();
-      if (!c) return '';
-      if (c === 'A' || c === 'G' || c === 'W') return c;
-      if (c.startsWith('SHOP') || c === 'S') return 'A';
-      if (c.startsWith('ERECTION') || c === 'E' || c === 'GA' || c.includes('GENERAL')) return 'G';
-      if (c.includes('PART') || c.includes('COMPONENT') || c === 'P') return 'W';
-      return c[0] || '';
-    };
-    const normalizeDrawingKey = (drgNo, cat) => {
-      const normDr = stripFrTrSuffix(normalizeToken(drgNo));
-      const normCat = normalizeCategory(cat);
-      return { normDr, normCat, key: `${normDr}::${normCat}` };
-    };
-
-    // Build entries for upsert (insert when new, update when exists)
-    const entriesToUpsert = (selectedDrawings || [])
-      .filter(d => Array.isArray(d.attachedPdfs) && d.attachedPdfs.length > 0)
-      .map(d => {
-        const drawingNumber = d.drawingNo || d.drgNo || d.drawingNo || '';
-        const category = normalizeCategory(d.category || '');
-        const { normDr } = normalizeDrawingKey(drawingNumber, category);
-        const drawingToSend = drawingNumber; // keep original; DB will upsert on (project, drawing, category)
-        return {
-          drawingNumber: drawingToSend,
-          category,
-          revision: d.rev || null,
-        };
-      })
-      .filter(e => e.drawingNumber);
-
-    if (entriesToUpsert.length > 0) {
-      const up = await fetch('/api/project-drawings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: Number(clientId),
-          projectId: Number(projectIdToSend),
-          packageId: selectedPackageId != null ? Number(selectedPackageId) : undefined,
-          entries: entriesToUpsert,
-        })
-      });
-      const upJson = await up.json().catch(() => ({}));
-      if (!up.ok) {
-        console.warn('ProjectDrawing upsert failed', up.status, upJson);
-      } else {
-        console.log('ProjectDrawing upserts:', upJson);
-      }
-    } else {
-      console.log('No drawings with files selected to publish; skipping DB upsert.');
-    }
-
-    // Create PDF + Excel + ZIP (same as download) and upload
-    const doc = new jsPDF('p', 'pt', 'a4');
-    let y = 40;
-    doc.setFontSize(14);
-    doc.text('STRUCTURES ONLINE', 40, y);
-    doc.setFontSize(10);
-    doc.text('C 56A/27, Sec-62, Noida-201307', 40, y + 15);
-    doc.text('Tel:+911202403056, www.structuresonline.net', 40, y + 30);
-    doc.text('E:mail: mahesh_teli@sol-mail.net', 40, y + 45);
-    doc.setFontSize(16);
-    doc.text('LETTER OF TRANSMITTAL', 350, y + 10);
-    y += 80;
-    const todayDate = new Date();
-    const formattedDate = `${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}-${todayDate.getFullYear()}`;
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`PROJECT NAME: ${projectName}`, 40, y + 30);
-    doc.text(`DATE: ${formattedDate}`, 350, y);
-    let grouped = {};
-    const tableDrawings = selectedDrawings.map((d) => ({
-      drawingNo: d.drawingNo || d.drgNo || '-',
-      desc: d.itemName || d.item || '-',
-      void: d.void || false,
-    }));
-    tableDrawings.forEach(item => {
-      const desc = item.void ? `${item.desc} [VOID]` : item.desc;
-      if (!grouped[desc]) grouped[desc] = [];
-      grouped[desc].push(item.drawingNo);
-    });
-    const pdfTableHeaders = [['REV. REMARK', 'SHEET TITLE', 'SHEET NAME', 'SHEET QTY']];
-    const pdfTableData = Object.entries(grouped).map(([desc, drawingNos]) => [
-      'ISSUED FOR APPROVAL',
-      desc,
-      drawingNos.join(', '),
-      drawingNos.length
-    ]);
-    autoTable(doc, { startY: y + 60, head: pdfTableHeaders, body: pdfTableData, styles: { fontSize: 10, cellPadding: 4 }, headStyles: { fillColor: [0, 112, 192] }, theme: 'grid' });
-    const pdfBlob = doc.output('blob');
-
-    const wb = XLSX.utils.book_new();
-    const headerSheetData = [["PROJECT NAME:", projectName]];
-    const tableSheetData = (selectedDrawings || []).map((d, i) => [i + 1, d.itemName || d.item || '-', d.drawingNo || d.drgNo || '-', d.rev || '']);
-    const finalSheetData = [...headerSheetData, ...tableSheetData];
-    const ws = XLSX.utils.aoa_to_sheet(finalSheetData);
-    XLSX.utils.book_append_sheet(wb, ws, "Transmittal");
-    const excelBlob = new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], { type: "application/octet-stream" });
-
+    // --- Create ZIP container ---
     const zip = new JSZip();
     const rootFolder = zip.folder("Drawing");
-    (storeDrawings || []).forEach(d => {
+
+    const getCategoryFolder = (cat) => {
+      if (cat === "A") return "Shop Drawings";
+      if (cat === "G") return "Erection Drawings";
+      if (cat === "W") return "Part Drawings";
+      return "Other Drawings";
+    };
+
+    // --- Add drawing files ---
+    (approvedDrawings || []).forEach(d => {
       if (d.attachedPdfs && d.attachedPdfs.length) {
-        const folderName = d.category || 'Other Drawings';
+        const folderName = getCategoryFolder(d.category?.toString().trim());
         const subFolder = rootFolder.folder(folderName);
         d.attachedPdfs.forEach(file => {
           const actualFile = file?.file || file;
@@ -674,101 +214,447 @@ const handlePublish = async () => {
         });
       }
     });
+
     const addToZipByExtension = (filesArray) => {
       if (!filesArray || !filesArray.length) return;
       filesArray.forEach((file) => {
-        if (!file?.file && !(file instanceof File)) return;
         const actualFile = file?.file || file;
-        const ext = actualFile.name.split('.').pop()?.toUpperCase() || "UNKNOWN";
+        const ext = actualFile?.name?.split('.').pop()?.toUpperCase() || "UNKNOWN";
         const extFolder = zip.folder(ext);
         extFolder.file(actualFile.name, actualFile);
       });
     };
+
     addToZipByExtension(approvedExtras);
     addToZipByExtension(approvedModels);
-    zip.file(`${zipName || 'Transmittal'}.pdf`, pdfBlob);
-    zip.file(`${zipName || 'Transmittal'}.xlsx`, excelBlob);
 
+    // --- Generate and add Transmittal PDF if checked ---
+    if (isTransmittalChecked) {
+      const doc = new jsPDF('p', 'pt', 'a4');
+      let y = 40;
+
+      doc.setFontSize(14);
+      doc.text('STRUCTURES ONLINE', 40, y);
+      doc.setFontSize(10);
+      doc.text('C 56A/27, Sec-62, Noida-201307', 40, y + 15);
+      doc.text('Tel:+911202403056, www.structuresonline.net', 40, y + 30);
+      doc.text('E:mail: mahesh_teli@sol-mail.net', 40, y + 45);
+
+      doc.setFontSize(16);
+      doc.text('LETTER OF TRANSMITTAL', 350, y + 10);
+
+      y += 80;
+      const todayDate = new Date();
+      const formattedDate = `${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}-${todayDate.getFullYear()}`;
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+
+      doc.text(`TO: ${fabricatorName}`, 40, y);
+      doc.text(`ATTN: ${fabricatorCoordinator}`, 40, y + 15);
+      doc.text(`PROJECT NAME: ${projectName}`, 40, y + 30);
+
+      doc.text(`DATE: ${formattedDate}`, 350, y);
+      doc.text(`TRANSMITTAL NO: 002`, 350, y + 15);
+      doc.text(`FABRICATOR JOB NO: ${fabricatorJobNo}`, 350, y + 30);
+      doc.text(`ISSUED BY: ${solTeamLeader}`, 350, y + 45);
+      doc.text(`SEQUENCE NO: ${sequenceNo || '-'}`, 350, y + 60);
+      doc.text(`SOL JOB NO: ${solJobNo}`, 350, y + 75);
+
+      y += 100;
+      doc.setFontSize(10);
+      doc.text('WE ARE SENDING YOU:', 40, y);
+      y += 15;
+      doc.text('Drg Qty.', 60, y);
+      doc.text('Drg Qty.', 370, y);
+      y += 15;
+
+      doc.text(`[${newItemForApprovalQty > 0 ? 'X' : ' '}]`, 40, y);
+      doc.text(`${newItemForApprovalQty}`, 60, y);
+      doc.text('NEW ITEM FOR APPROVAL', 90, y);
+      y += 15;
+      doc.text(`[${newItemForFabFieldQty > 0 ? 'X' : ' '}]`, 40, y);
+      doc.text(`${newItemForFabFieldQty}`, 60, y);
+      doc.text('NEW ITEM FOR FAB/FIELD', 90, y);
+      y += 15;
+      doc.text(`[${deletedItemQty > 0 ? 'X' : ' '}]`, 40, y);
+      doc.text(`${deletedItemQty}`, 60, y);
+      doc.text('DELETED ITEM', 90, y);
+
+      y -= 30;
+      doc.text(`[${revisedItemForApprovalQty > 0 ? 'X' : ' '}]`, 350, y);
+      doc.text(`${revisedItemForApprovalQty}`, 370, y);
+      doc.text('REVISED ITEM FOR APPROVAL', 400, y);
+      y += 15;
+      doc.text(`[${revisedItemForFabFieldQty > 0 ? 'X' : ' '}]`, 350, y);
+      doc.text(`${revisedItemForFabFieldQty}`, 370, y);
+      doc.text('REVISED ITEM FOR FAB/FIELD', 400, y);
+      y += 15;
+      doc.text('Total', 350, y);
+      doc.text(`${totalQty}`, 400, y);
+
+      y += 40;
+      const remarkRectX = 35;
+      const remarkRectY = y;
+      const remarkRectWidth = 520;
+      const remarkTitleHeight = 20;
+      const remarkContentHeight = 30;
+
+      doc.setDrawColor(0);
+      doc.rect(remarkRectX, remarkRectY, remarkRectWidth, remarkTitleHeight + remarkContentHeight);
+      doc.line(remarkRectX, remarkRectY + remarkTitleHeight, remarkRectX + remarkRectWidth, remarkRectY + remarkTitleHeight);
+
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('TRANSMITTAL REMARK', remarkRectX + (remarkRectWidth / 2), remarkRectY + (remarkTitleHeight / 2) + 4, { align: 'center' });
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(zipName, remarkRectX + 5, remarkRectY + remarkTitleHeight + (remarkContentHeight / 2) + 3);
+
+      y = remarkRectY + remarkTitleHeight + remarkContentHeight;
+      y += 20;
+
+      const grouped = {};
+      tableDrawings.forEach(item => {
+        const desc = item.void ? `${item.desc} [VOID]` : item.desc;
+        if (!grouped[desc]) grouped[desc] = [];
+        grouped[desc].push(item.drawingNo);
+      });
+
+      const pdfTableHeaders = [['REV. REMARK', 'SHEET TITLE', 'SHEET NAME', 'SHEET QTY']];
+      const pdfTableData = Object.entries(grouped).map(([desc, drawingNos]) => [
+        'ISSUED FOR APPROVAL',
+        desc,
+        drawingNos.join(','),
+        drawingNos.length
+      ]);
+
+      autoTable(doc, {
+        startY: y,
+        head: pdfTableHeaders,
+        body: pdfTableData,
+        styles: { fontSize: 10, cellPadding: 4 },
+        headStyles: { fillColor: [0, 112, 192] },
+        theme: 'grid'
+      });
+      const pdfBlob = doc.output('blob');
+      zip.file(`${transmittalName || 'Transmittal'}.pdf`, pdfBlob);
+    }
+
+    // --- Generate and add Submittal Excel if checked ---
+    if (isSubmittalChecked) {
+      const wb = XLSX.utils.book_new();
+      const headerSheetData = [
+        [projectName || "PROJECT NAME"],
+        ["FABRICATOR JOB NO.:", fabricatorJobNo, "FABRICATOR NAME:", fabricatorName],
+        ["FABRICATOR CO-ORDINATOR:", fabricatorCoordinator, "SOL TEAM LEADER:", solTeamLeader],
+        ["SOL JOB NO.:", solJobNo],
+        [],
+        [
+          "S.No", "Description", "Drawing No", "ASS'Y QTY", "Rev", "FINISH",
+          "Date Sent for Approval", "Date Sent For Fab/Field", "REMARKS",
+          "MOD BY", "DR BY", "CH BY", "DRG'SIZE", "REV REMARKS"
+        ]
+      ];
+
+      const tableSheetData = tableDrawings.map((item, i) => [
+        i + 1,
+        item.void ? `${item.desc} [VOID]` : item.desc,
+        item.drawingNo,
+        item.itemQty || "",
+        item.rev || "",
+        item.finish || "",
+        item.dateSentForApproval || "",
+        item.dateSentForFab || "",
+        item.remark || "",
+        item.modBy || "",
+        item.detailer || "",
+        item.checker || "",
+        item.sheetSize || "",
+        item.revRemarks || ""
+      ]);
+
+      const finalSheetData = [...headerSheetData, ...tableSheetData];
+      const ws = XLSX.utils.aoa_to_sheet(finalSheetData);
+      // --- Styling ---
+
+      // Merge first row across all columns for project name
+      ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 13 } }];
+
+      // Apply styles
+      Object.keys(ws).forEach(cell => {
+        if (cell[0] === '!') return;
+
+        const row = parseInt(cell.replace(/[^0-9]/g, ""), 10);
+
+        // Project Name row
+        if (row === 1) {
+          ws[cell].s = {
+            font: { bold: true, sz: 16, color: { rgb: "0000FF" } }, // Big blue bold
+            alignment: { horizontal: "center", vertical: "center" }
+          };
+        }
+
+        // Info rows (Fabricator, Coordinator, SOL job)
+        if (row >= 2 && row <= 4) {
+          ws[cell].s = {
+            font: { bold: true, color: { rgb: "0000FF" } },
+            alignment: { horizontal: "center", vertical: "center" }
+          };
+        }
+
+        // Column headers row (S.No...Rev Remarks)
+        if (row === 6) {
+          ws[cell].s = {
+            font: { bold: true, color: { rgb: "0000FF" } },
+            alignment: { horizontal: "center", vertical: "center" },
+            border: {
+              top: { style: "thin", color: { rgb: "000000" } },
+              bottom: { style: "thin", color: { rgb: "000000" } },
+              left: { style: "thin", color: { rgb: "000000" } },
+              right: { style: "thin", color: { rgb: "000000" } }
+            }
+          };
+        }
+      }
+
+      );
+
+      // Set column widths for better readability
+      ws['!cols'] = [
+        { wch: 5 },  // S.No
+        { wch: 30 }, // Description
+        { wch: 20 }, // Drawing No
+        { wch: 10 }, // ASS'Y QTY
+        { wch: 8 },  // Rev
+        { wch: 12 }, // Finish
+        { wch: 18 }, // Date Sent for Approval
+        { wch: 18 }, // Date Sent for Fab/Field
+        { wch: 20 }, // Remarks
+        { wch: 10 }, // MOD BY
+        { wch: 10 }, // DR BY
+        { wch: 10 }, // CH BY
+        { wch: 12 }, // DRG'SIZE
+        { wch: 20 }  // REV REMARKS
+      ];
+
+      XLSX.utils.book_append_sheet(wb, ws, "Submittal Log");
+
+      const excelBlob = new Blob(
+        [XLSX.write(wb, { bookType: "xlsx", type: "array" })],
+        { type: "application/octet-stream" }
+      );
+      zip.file(`${submittalName || 'Submittal'}.xlsx`, excelBlob);
+    }
+
+    // --- Generate and Download ZIP ---
     const content = await zip.generateAsync({ type: "blob" });
-    const zipFile = new File([content], `${zipName || 'Transmittal'}.zip`, { type: 'application/zip' });
-    const res = await uploadToGCSDirect(zipFile, {
-      clientId: Number(clientId),
-      projectId: Number(projectIdToSend),
-      packageId: selectedPackageId || undefined,
-      packageName: selectedPackageName || undefined,
-      onProgress: setUploadProgress,
-    });
-    setPublishResult({ success: true, data: res });
-    setShowPublishModal(true);
+    saveAs(content, `${zipFileName}.zip`);
+    alert("Download completed!");
+  };
 
-    // Send notification email if recipients provided
-    const recipients = String(toEmails || '').trim();
-    if (recipients) {
+
+  // Publish: upload the same ZIP to /api/upload and rely on server to log EMPLOYEE_UPLOAD
+  const handlePublish = async () => {
+    const zipName = zipNameRef.current?.value || '';
+
+    try {
+      setUploadProgress(0);
+      setIsPublishing(true);
+
+      console.log('Starting publish process...');
+
+      // Validate required data before creating files
+      let clientId = selectedClientId;
+      console.log('Using selectedClientId from store:', clientId);
+
+      if (!clientId || !Number.isFinite(Number(clientId))) {
+        throw new Error('Please select a client in the PublishDrawing page before publishing.');
+      }
+
+      // Determine numeric projectId: projectNo is the project number, we need to find the actual database ID
+      let projectIdToSend = null;
       try {
-        // Resolve client name for email metadata
-        let clientNameSafe = undefined;
-        try {
-          const cres = await fetch('/api/clients', { cache: 'no-store' });
-          if (cres.ok) {
-            const clist = await cres.json();
-            const c = (clist || []).find(x => String(x.id) === String(selectedClientId));
-            if (c?.name) clientNameSafe = c.name;
-          }
-        } catch {}
-        const resp = await fetch('/api/send-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: recipients,
-            subject: emailSubject || undefined,
-            text: emailBody || undefined,
-            clientName: clientNameSafe || undefined,
-            projectName: projectName || undefined,
-            submittalName: selectedPackageName || undefined,
-            storagePath: (res?.record?.storagePath || res?.record?.storage_path || res?.objectPath || '').replace(/^gs:\/\/[^/]+\//, ''),
-          })
+        console.log('Resolving project ID for projectNo:', projectNo);
+        const pres = await fetch('/api/projects', {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
         });
-        const respJson = await resp.json().catch(() => ({}));
-        if (resp.ok && (respJson?.sent === true)) {
-          const count = Number(respJson?.to ?? 0) || recipients.split(/[;,]/).map(s => s.trim()).filter(Boolean).length;
-          setPublishResult(prev => ({ ...(prev || {}), email: { sent: true, to: count } }));
-          alert(`Email sent successfully to ${count} recipient(s).`);
+        if (pres.ok) {
+          const pj = await pres.json();
+          console.log('Available projects:', pj?.map(p => ({ id: p.id, projectNo: p.projectNo, name: p.name })));
+
+          // Search by projectNo field first (most likely match), then fallback to other fields
+          const found = (pj || []).find(p =>
+            String(p.projectNo) === String(projectNo) ||
+            String(p.name) === String(projectNo) ||
+            String(p.projectName) === String(projectNo) ||
+            String(p.id) === String(projectNo)
+          );
+
+          if (found) {
+            projectIdToSend = found.id;
+            console.log('Found project:', { id: found.id, projectNo: found.projectNo, name: found.name });
+          } else {
+            console.error('No project found matching:', projectNo);
+          }
         } else {
-          const errMsg = respJson?.error || resp.statusText || 'Unknown error';
-          setPublishResult(prev => ({ ...(prev || {}), email: { sent: false, error: errMsg } }));
-          alert(`Failed to send email: ${errMsg}`);
+          console.error('Failed to fetch projects:', pres.status, pres.statusText);
         }
       } catch (e) {
-        const msg = e?.message || String(e);
-        console.warn('Email notification failed:', msg);
-        setPublishResult(prev => ({ ...(prev || {}), email: { sent: false, error: msg } }));
-        alert(`Failed to send email: ${msg}`);
+        console.warn('Could not resolve projectId before publish', e?.message || e);
       }
-    }
 
-  } catch (e) {
-    console.error('Publish failed:', e);
-    let errorMessage = e?.message || String(e);
-    if (e?.message?.includes('NetworkError')) {
-      errorMessage = 'Network connection failed. Please check your internet connection and try again.';
-    } else if (e?.message?.includes('fetch')) {
-      errorMessage = 'Failed to connect to server. Please ensure the development server is running.';
-    }
-    setPublishResult({ success: false, error: errorMessage });
-    setShowPublishModal(true);
-  } finally {
-    setIsPublishing(false);
-  }
-};
+      if (!projectIdToSend || !Number.isFinite(Number(projectIdToSend))) {
+        throw new Error(`Unable to determine project ID from "${projectNo}". Please ensure the project exists and is accessible.`);
+      }
 
+      console.log('Publishing with IDs:', { clientId: Number(clientId), projectId: Number(projectIdToSend) });
+
+      // Recreate the PDF and Excel and zip exactly like handleDownload
+      const doc = new jsPDF('p', 'pt', 'a4');
+      let y = 40;
+      doc.setFontSize(14);
+      doc.text('STRUCTURES ONLINE', 40, y);
+      doc.setFontSize(10);
+      doc.text('C 56A/27, Sec-62, Noida-201307', 40, y + 15);
+      doc.text('Tel:+911202403056, www.structuresonline.net', 40, y + 30);
+      doc.text('E:mail: mahesh_teli@sol-mail.net', 40, y + 45);
+      doc.setFontSize(16);
+      doc.text('LETTER OF TRANSMITTAL', 350, y + 10);
+
+      // Minimal header content for PDF (reuse small subset)
+      y += 80;
+      const todayDate = new Date();
+      const formattedDate = `${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}-${todayDate.getFullYear()}`;
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`PROJECT NAME: ${projectName}`, 40, y + 30);
+      doc.text(`DATE: ${formattedDate}`, 350, y);
+
+      // Table generation (same grouping logic)
+      let grouped = {};
+      const tableDrawings = selectedDrawings.map((d, i) => ({
+        drawingNo: d.drawingNo || d.drgNo || '-',
+        desc: d.itemName || d.item || '-',
+        void: d.void || false,
+      }));
+      tableDrawings.forEach(item => {
+        const desc = item.void ? `${item.desc} [VOID]` : item.desc;
+        if (!grouped[desc]) grouped[desc] = [];
+        grouped[desc].push(item.drawingNo);
+      });
+
+      const pdfTableHeaders = [['REV. REMARK', 'SHEET TITLE', 'SHEET NAME', 'SHEET QTY']];
+      const pdfTableData = Object.entries(grouped).map(([desc, drawingNos]) => [
+        'ISSUED FOR APPROVAL',
+        desc,
+        drawingNos.join(', '),
+        drawingNos.length
+      ]);
+
+      autoTable(doc, {
+        startY: y + 60,
+        head: pdfTableHeaders,
+        body: pdfTableData,
+        styles: { fontSize: 10, cellPadding: 4 },
+        headStyles: { fillColor: [0, 112, 192] },
+        theme: 'grid'
+      });
+
+      const pdfBlob = doc.output('blob');
+
+      // Excel
+      const wb = XLSX.utils.book_new();
+      const headerSheetData = [
+        ["PROJECT NAME:", projectName],
+      ];
+      const tableSheetData = (selectedDrawings || []).map((d, i) => [
+        i + 1,
+        d.itemName || d.item || '-',
+        d.drawingNo || d.drgNo || '-',
+        d.rev || '',
+      ]);
+      const finalSheetData = [...headerSheetData, ...tableSheetData];
+      const ws = XLSX.utils.aoa_to_sheet(finalSheetData);
+      XLSX.utils.book_append_sheet(wb, ws, "Transmittal");
+      const excelBlob = new Blob([XLSX.write(wb, { bookType: "xlsx", type: "array" })], { type: "application/octet-stream" });
+
+      // ZIP
+      const zip = new JSZip();
+      const rootFolder = zip.folder("Drawing");
+
+      (approvedDrawings || []).forEach(d => {
+        if (d.attachedPdfs && d.attachedPdfs.length) {
+          const folderName = d.category || 'Other Drawings';
+          const subFolder = rootFolder.folder(folderName);
+          d.attachedPdfs.forEach(file => {
+            const actualFile = file?.file || file;
+            subFolder.file(actualFile.name, actualFile);
+          });
+        }
+      });
+      const addToZipByExtension = (filesArray) => {
+        if (!filesArray || !filesArray.length) return;
+        filesArray.forEach((file) => {
+          if (!file?.file && !(file instanceof File)) return;
+          const actualFile = file?.file || file;
+          const ext = actualFile.name.split('.').pop()?.toUpperCase() || "UNKNOWN";
+          const extFolder = zip.folder(ext);
+          extFolder.file(actualFile.name, actualFile);
+        });
+      };
+      addToZipByExtension(approvedExtras);
+      addToZipByExtension(approvedModels);
+
+      zip.file(`${transmittalName || 'Transmittal'}.pdf`, pdfBlob);
+      zip.file(`${submittalName || 'Submittal'}.xlsx`, excelBlob);
+
+      console.log('Generating ZIP file...');
+      const content = await zip.generateAsync({ type: "blob" });
+      console.log('ZIP file generated, size:', content.size);
+
+      // Upload ZIP directly to GCS with progress, then log JSON automatically
+      const zipFile = new File([content], `${zipName || 'Transmittal'}.zip`, { type: 'application/zip' });
+
+      console.log('Starting upload to GCS...');
+      const res = await uploadToGCSDirect(zipFile, {
+        clientId: Number(clientId),
+        projectId: Number(projectIdToSend),
+        onProgress: setUploadProgress,
+      });
+
+      console.log('Upload successful:', res);
+      setPublishResult({ success: true, data: res });
+      setShowPublishModal(true);
+
+    } catch (e) {
+      console.error('Publish failed:', e);
+
+      // More specific error handling
+      let errorMessage = e?.message || String(e);
+      if (e?.message?.includes('NetworkError')) {
+        errorMessage = 'Network connection failed. Please check your internet connection and try again.';
+      } else if (e?.message?.includes('fetch')) {
+        errorMessage = 'Failed to connect to server. Please ensure the development server is running.';
+      }
+
+      setPublishResult({ success: false, error: errorMessage });
+      setShowPublishModal(true);
+    }
+    finally {
+      setIsPublishing(false);
+    }
+  };
 
 
   // Modal open/close handlers
+  const handleViewAttachment = useCallback((item) => {
+    if (!item) return;
 
-
-  const handleViewAttachment = useCallback((drawing) => {
-    setModalFiles(drawing.attachedPdfs || []);
-    setModalDrawingNo(drawing.drawingNo);
+    setModalFiles(Array.isArray(item?.attachedPdfs) ? item.attachedPdfs : []);
+    setModalDrawingNo(item.drawingNo || item.drgNo || '-');
     setShowModal(true);
   }, []);
 
@@ -806,15 +692,30 @@ const handlePublish = async () => {
         </div>
         <div>
           <label>Transmittal Name:</label>
-          <input value={transmittalName} readOnly className="border w-full px-2 py-1 rounded bg-gray-100" />
+          <input
+            type="text"
+            value={transmittalName}
+            readOnly
+            className="border rounded px-2 py-1 w-full bg-gray-100"
+          />
         </div>
         <div>
           <label>Submittal Name:</label>
-          <input value={submittalName} readOnly className="border w-full px-2 py-1 rounded bg-gray-100" />
+          <input
+            type="text"
+            value={submittalName}
+            readOnly
+            className="border rounded px-2 py-1 w-full bg-gray-100"
+          />
         </div>
         <div>
           <label>Zip Name:</label>
-          <input value={zipName} onChange={(e)=> setZipName(e.target.value)} ref={zipNameRef} className="border w-full px-2 py-1 rounded" />
+          <input
+            type="text"
+            value={zipName}
+            onChange={(e) => setZipName(e.target.value)} // ✅ allow user to change
+            className="border rounded px-2 py-1 bg-gray-100 text-gray-700 w-full"
+          />
         </div>
         <div>
           <label>Complete Name:</label>
@@ -822,100 +723,80 @@ const handlePublish = async () => {
         </div>
       </div>
 
-      {/* Drawing Table */}
-      <div className='overflow-x-auto border rounded mb-6'>
-        <table className="w-full text-sm">
-          <thead className="bg-cyan-800 text-white text-left">
-            <tr>
-              {[
-                'S.No',
-                'Description',
-                'Drawing No',
-                'Rev',
-                'Date Sent for Approval',
-                'Date Received BFA',
-                'Date Sent For Fab./Field',
-                'Remark',
-                'Detailer',
-                'Checker',
-                'Sheet Size',
-                'Item Qty',
-                'Attachment'
-              ].map(header => (
-                <th key={header} className="p-4">{header}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {tableDrawings.map((item, i) => (
-              <tr key={item.id} className={item.void ? 'bg-red-200' : ''}>
-                <td className="p-2 text-center">{i + 1}</td>
-                <td className="p-2">{item.void ? `${item.desc} [VOID]` : item.desc}</td>
-                <td className="p-2 text-center">{item.drawingNo}</td>
-                <td className="p-2 text-center">{item.rev}</td>
-                <td className="p-2 text-center">{item.dateSentForApproval}</td>
-                <td className="p-2 text-center">{item.dateReceivedBFA}</td>
-                <td className="p-2 text-center">{item.dateSentForFab}</td>
-                <td className="p-2">{item.remark}</td>
-                <td className="p-2 text-center">{item.detailer}</td>
-                <td className="p-2 text-center">{item.checker}</td>
-                <td className="p-2 text-center">{item.sheetSize}</td>
-                <td className="p-2 text-center">{item.itemQty}</td>
-                <td className="p-2 text-center">
-                  {item.attachedPdfs && item.attachedPdfs.length > 0 ? (
-                    <span
-                      className="text-blue-500 underline cursor-pointer"
-                      onClick={() => handleViewAttachment(item)}
-                    >
-                      View
-                    </span>
-                  ) : (
-                    ''
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
       {/* Checkboxes */}
       <div className="flex flex-wrap items-center gap-4 text-sm mt-4">
-        <label className="flex items-center gap-1"><input type="checkbox" onChange={e => e.target.checked ? generateLogName('transmittal') : clearLogName('transmittal')} /> Transmittal Log</label>
-        <label className="flex items-center gap-1"><input type="checkbox" onChange={e => e.target.checked ? generateLogName('submittal') : clearLogName('submittal')} /> Submittal Log</label>
+        {/* <label className="flex items-center gap-1"><input type="checkbox" /> Include Item Qty</label> */}
+        {/* <label className="flex items-center gap-1"><input type="checkbox" /> Allow to send cad pdf's</label> */}
+        <label className="flex items-center gap-1"> <input
+          type="checkbox"
+          id="transmittal"
+          onChange={(e) =>
+            setTransmittalChecked(e.target.checked ? generateLogName('transmittal') : clearLogName('transmittal'))
+          }
+        /> Transmittal Log</label>
+        <label className="flex items-center gap-1"> <input
+          type="checkbox"
+          id="submittal"
+          onChange={(e) =>
+            setSubmittalChecked(e.target.checked ? generateLogName('submittal') : clearLogName('submittal'))
+          }
+        />Submittal Log</label>
         <label className="flex items-center gap-1"><input type="checkbox" /> Complete Log</label>
+        <label className="flex items-center gap-1"><input type="checkbox" /> Don't send mails</label>
       </div>
 
-      {/* Email Section */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-        <div className="md:col-span-1">
-          <label className="text-sm">Recipients (comma/semicolon separated):</label>
-          <input
-            value={toEmails}
-            onChange={(e) => setToEmails(e.target.value)}
-            className="w-full border p-2 rounded"
-            placeholder="email1@example.com; email2@example.com"
-          />
+      {/* Drawing Table */}
+      <div className='overflow-x-auto border rounded mb-6'>
+        {/* Scroll container for vertical scroll */}
+        <div className="max-h-80 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-cyan-800 text-white text-left sticky top-0 z-10">
+              <tr>
+                {['S.No', 'Description', 'Drawing No', 'Rev', 'Date Sent for Approval', 'Date Received BFA', 'Date Sent For Fab./Field', 'Remark', 'Detailer', 'Checker', 'Sheet Size', 'Item Qty', 'Attachment'].map(header => (
+                  <th key={header} className="p-4 bg-cyan-800">{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tableDrawings.map((item, i) => (
+                <tr key={i} className={item.void ? 'bg-red-200' : ''}>
+                  <td className="p-2 text-center">{item.id}</td>
+                  <td className="p-2">{item.void ? `${item.desc} [VOID]` : item.desc}</td>
+                  <td className="p-2 text-center">{item.drawingNo}</td>
+                  <td className="p-2 text-center">{item.rev}</td>
+                  <td className="p-2 text-center">{item.dateSentForApproval}</td>
+                  <td className="p-2 text-center">{item.dateReceivedBFA}</td>
+                  <td className="p-2 text-center">{item.dateSentForFab}</td>
+                  <td className="p-2">{item.remark}</td>
+                  <td className="p-2 text-center">{item.detailer}</td>
+                  <td className="p-2 text-center">{item.checker}</td>
+                  <td className="p-2 text-center">{item.sheetSize}</td>
+                  <td className="p-2 text-center">{item.itemQty}</td>
+                  <td className="p-2 text-center">
+                    {item.attachedPdfs?.length > 0 && (
+                      <span className="text-blue-500 underline cursor-pointer" onClick={() => handleViewAttachment(item)}>View</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <div className="md:col-span-2 grid grid-cols-1 gap-4">
-          <div>
-            <label className="text-sm">Subject</label>
-            <input
-              value={emailSubject}
-              onChange={(e) => setEmailSubject(e.target.value)}
-              className="w-full border p-2 rounded"
-              placeholder="Subject"
-            />
-          </div>
-          <div>
-            <label className="text-sm">Body</label>
-            <textarea
-              value={emailBody}
-              onChange={(e) => setEmailBody(e.target.value)}
-              className="w-full border p-2 rounded min-h-[120px]"
-              placeholder="Write your email message here..."
-            />
-          </div>
+      </div>
+
+      {/* Remarks Section */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+        <div>
+          <label className="text-sm">Subject:</label>
+          <textarea className="w-full border p-2 rounded" />
+        </div>
+        <div>
+          <label className="text-sm">Mail Text:</label>
+          <textarea className="w-full border p-2 rounded" />
+        </div>
+        <div>
+          <label className="text-sm">Transmittal Remark:</label>
+          <textarea className="w-full border p-2 rounded" />
         </div>
       </div>
 
@@ -961,29 +842,11 @@ const handlePublish = async () => {
               <div>
                 <p className="mb-2">Publish succeeded.</p>
                 <pre className="text-xs bg-gray-100 p-2 rounded">{JSON.stringify(publishResult.data, null, 2)}</pre>
-                {publishResult?.email && (
-                  <div className="mt-3 text-sm">
-                    {publishResult.email.sent ? (
-                      <p className="text-green-700">Email: Sent to {publishResult.email.to || 0} recipient(s).</p>
-                    ) : (
-                      <p className="text-red-700">Email: Failed{publishResult.email.error ? ` — ${publishResult.email.error}` : ''}</p>
-                    )}
-                  </div>
-                )}
               </div>
             ) : (
               <div>
                 <p className="mb-2 text-red-600">Publish failed.</p>
                 <pre className="text-xs bg-gray-100 p-2 rounded">{publishResult?.error}</pre>
-                {publishResult?.email && (
-                  <div className="mt-3 text-sm">
-                    {publishResult.email.sent ? (
-                      <p className="text-green-700">Email: Sent to {publishResult.email.to || 0} recipient(s).</p>
-                    ) : (
-                      <p className="text-red-700">Email: Failed{publishResult.email.error ? ` — ${publishResult.email.error}` : ''}</p>
-                    )}
-                  </div>
-                )}
               </div>
             )}
             <div className="flex justify-end gap-2 mt-4">
