@@ -7,21 +7,22 @@ const GCS_BUCKET = process.env.GCS_BUCKET;
 
 export async function GET(req) {
   try {
-    // Fetch clients selecting only columns that are guaranteed to exist in the current DB
-    // This avoids failures when the live DB is missing newer optional columns (e.g., companyName)
-    const clients = await prisma.client.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        contactNo: true,
-        address: true,
-        dbUrl: true, // mapped to DB_URL
-        createdAt: true,
-        updatedAt: true,
-        // Note: omit companyName and other new fields to prevent column-not-found errors on older DBs
-      }
-    });
+    // Prefer a raw query to include optional legacy columns when present (e.g., clientJobNo)
+    const colRows = await prisma.$queryRaw`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'Client'`;
+    const colSet = new Set((colRows || []).map(r => r.column_name));
+    const select = [
+      `c."id" AS id`,
+      `c."name" AS name`,
+      `c."email" AS email`,
+      `c."contactNo" AS contactNo`,
+      `c."address" AS address`,
+      colSet.has('DB_URL') ? `c."DB_URL" AS dbUrl` : `NULL AS dbUrl`,
+      `c."createdAt" AS createdAt`,
+      `c."updatedAt" AS updatedAt`,
+      colSet.has('clientJobNo') ? `c."clientJobNo" AS clientJobNo` : `NULL AS clientJobNo`
+    ];
+    const rows = await prisma.$queryRawUnsafe(`SELECT ${select.join(', ')} FROM "Client" c`);
+    const clients = Array.isArray(rows) ? rows : [];
     if (clients.length === 0) return NextResponse.json([]);
 
     const clientIds = clients.map(c => c.id);
