@@ -6,7 +6,7 @@ import SearchFilter from '../SearchFilter';
 import useUserStore from '../../../stores/userStore';
 
 const ViewUser = () => {
-  const router = useRouter(); 
+  const router = useRouter();
   const [dbUsers, setDbUsers] = useState([]); // store users from DB
   const removeUser = useUserStore((state) => state.removeUser);
   const setSelectedUser = useUserStore((state) => state.setSelectedUser);
@@ -18,23 +18,47 @@ const ViewUser = () => {
     const fetchUsers = async () => {
       const res = await fetch("/api/users");
       const data = await res.json();
-      setDbUsers(data);
-      setFilteredData(data);
+      const employees = data.filter(
+        u => u.userType?.toLowerCase() === 'employee'
+      ); setDbUsers(employees);
+      setFilteredData(employees);
     };
     fetchUsers();
   }, []);
 
-  const handleDelete = (row) => {
-    if (confirm(`Are you sure you want to delete "${row.firstname || row.name}"?`)) {
-      removeUser(row.id); // currently removes from Zustand only
-      // TODO: Call DELETE API route to remove from DB also
+  const handleDelete = async (row) => {
+    if (!confirm(`Delete ${row.name}?`)) return;
+
+    try {
+      const res = await fetch(`/api/users?id=${row.id}`, {
+        method: "DELETE",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data.error);
+
+      // Remove from UI
+      setFilteredData(prev => prev.filter(u => u.id !== row.id));
+      removeUser(row.id);
+
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Delete failed");
     }
   };
 
-  const handleEdit = (row) => {
-    setSelectedUser(row); 
-    router.push('/dashboard/admin/user/new_user'); 
+ const handleEdit = (row) => {
+  const hydratedUser = {
+    ...row,
+    companyName: row.client?.companyName || '',
+    contactNo: row.client?.contactNo || '',
+    address: row.client?.address || '',
   };
+
+  setSelectedUser(hydratedUser);
+  router.push('/dashboard/admin/user/new_user');
+};
 
   return (
     <div className="p-6">
@@ -56,7 +80,7 @@ const ViewUser = () => {
         keys={['name', 'email', 'userType', 'department', 'designation', 'empId']}
         data={filteredData}
         showActions={true}
-        onEdit={handleEdit} 
+        onEdit={handleEdit}
         onDelete={handleDelete}
       />
     </div>

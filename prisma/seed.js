@@ -1,136 +1,122 @@
-// prisma/seed.js
-const { PrismaClient } = require("@prisma/client");
+import { PrismaClient } from "@prisma/client";
+
 const prisma = new PrismaClient();
 
+const TOTAL_FAKE_USERS = 25; // 🔁 change between 10–50
+const TOTAL_PROJECTS = 6;
+
 async function main() {
-  console.log("🌱 Seeding database...");
+  // --- Clear tables ---
+  await prisma.documentLog.deleteMany();
+  await prisma.project.deleteMany();
+  await prisma.user.deleteMany();
+  await prisma.client.deleteMany();
 
-  // ---- Clients ----
-  const client1 = await prisma.client.upsert({
-    where: { email: "client1@example.com" },
-    update: {},
-    create: {
-      name: "ABC Constructions",
-      email: "client1@example.com",
-      companyName: "ABC Constructions Ltd.",
-      contactNo: "9876543210",
-      address: "123, Main Street, Delhi",
-      totalProjects: 2,
-      activeProjects: 1,
-      completedProjects: 1,
-      totalProjectValue: 5000000.00,
-      totalWeightage: 1000.50,
+  // -------------------------
+  // Create Client
+  // -------------------------
+  const client = await prisma.client.create({
+    data: {
+      name: "Steel Vault Industries",
+      email: "contact@example.com",
+      companyName: "Steel Vault Pvt Ltd",
+      contactNo: "9999999999",
+      address: "Faridabad, Haryana",
+      configuration: {},
+      ccListData: [],
+      folderStructure: {},
     },
   });
 
-  // ---- Users ----
-  const user1 = await prisma.user.upsert({
-    where: { email: "tl1@example.com" },
-    update: {},
-    create: {
-      name: "Rohit Sharma",
-      email: "tl1@example.com",
-      password: "hashedpassword123",
-      userType: "TEAM_LEAD",
-      clientId: client1.id,
-      contactNo: "9876500000",
-      address: "Mumbai, India",
-      gender: "Male",
+  // -------------------------
+  // Create Admin
+  // -------------------------
+  const admin = await prisma.user.create({
+    data: {
+      name: "System Admin",
+      email: "admin@example.com",
+      password: "12345",
+      userType: "ADMIN",
+      department: "Administration",
+      designation: "Admin",
+      empId: "ADMIN001",
+      clientId: client.id,
+      isRelieved: false,
     },
   });
 
-  const user2 = await prisma.user.upsert({
-    where: { email: "eng1@example.com" },
-    update: {},
-    create: {
-      name: "Priya Verma",
-      email: "eng1@example.com",
-      password: "hashedpassword456",
-      userType: "ENGINEER",
-      clientId: client1.id,
-      contactNo: "9876511111",
-      address: "Delhi, India",
-      gender: "Female",
+  // -------------------------
+  // Create Team Lead
+  // -------------------------
+  const teamLead = await prisma.user.create({
+    data: {
+      name: "Amit Sharma",
+      email: "amit.sharma@example.com",
+      password: "12345",
+      userType: "EMPLOYEE",
+      department: "Engineering",
+      designation: "Team Lead",
+      empId: "TL001",
+      clientId: client.id,
+      isRelieved: false,
     },
   });
 
-  // ---- Projects ----
-  const project1 = await prisma.project.upsert({
-    where: { projectNo: "P001" },
-    update: {},
-    create: {
-      projectNo: "P001",
-      solProjectNo: "SOL-1001",
-      name: "Metro Expansion",
-      description: "Underground metro expansion project",
-      clientId: client1.id,
-      solTLId: user1.id,
-      status: "IN_PROGRESS",
-      priority: "HIGH",
-      progress: 25.5,
+  // -------------------------
+  // Create Fake Employees
+  // -------------------------
+  const fakeUsers = [];
+
+  for (let i = 1; i <= TOTAL_FAKE_USERS; i++) {
+    fakeUsers.push({
+      name: `Employee ${i}`,
+      email: `employee${i}@example.com`,
+      password: "12345",
+      userType: "EMPLOYEE",
+      department: i % 2 === 0 ? "Design" : "Planning",
+      designation: "Engineer",
+      empId: `EMP${100 + i}`,
+      clientId: client.id,
+      isRelieved: false,
+    });
+  }
+
+  await prisma.user.createMany({ data: fakeUsers });
+
+  // -------------------------
+  // Create Multiple Projects
+  // -------------------------
+  const projects = [];
+
+  for (let i = 1; i <= TOTAL_PROJECTS; i++) {
+    projects.push({
+      projectNo: `PRJ-${i.toString().padStart(3, "0")}`,
+      solProjectNo: `SOL-${1000 + i}`,
+      name: `Project ${i}`,
+      description: `Auto-generated project ${i}`,
+      clientId: client.id,
+      solTLId: teamLead.id,
+      status: i % 2 === 0 ? "IN_PROGRESS" : "PLANNING",
+      priority: i % 3 === 0 ? "HIGH" : "MEDIUM",
+      progress: i % 2 === 0 ? 30 + i * 5 : 0,
       branch: "Delhi",
-      startDate: new Date("2025-01-15"),
-      expectedCompletion: new Date("2026-01-15"),
-      totalDays: 365,
-      totalProjectHours: "1200",
-      projectComplexity: "COMPLEX",
-      solJobNo: "SJ-2025-01",
-      projectDataFolder: "/projects/metro-expansion",
-    },
-  });
-
-  const project2 = await prisma.project.upsert({
-    where: { projectNo: "P002" },
-    update: {},
-    create: {
-      projectNo: "P002",
-      solProjectNo: "SOL-1002",
-      name: "Mall Construction",
-      description: "Commercial mall construction project",
-      clientId: client1.id,
-      solTLId: user1.id,
-      status: "PLANNING",
-      priority: "MEDIUM",
-      progress: 0.0,
-      branch: "Gurgaon",
-      startDate: new Date("2025-02-01"),
-      expectedCompletion: new Date("2026-03-01"),
-      totalDays: 395,
       projectComplexity: "MEDIUM",
-      solJobNo: "SJ-2025-02",
-      projectDataFolder: "/projects/mall-construction",
-    },
-  });
+      projectType: "Infrastructure",
+      projectSubType: "Industrial",
+      projectDataFolder: `/projects/project-${i}`,
+    });
+  }
 
-  // ---- Document Logs ----
-  await prisma.documentLog.createMany({
-    data: [
-      {
-        fileName: "metro_plan.pdf",
-        clientId: client1.id,
-        projectId: project1.id,
-        storagePath: "/docs/metro_plan.pdf",
-        size: 2048,
-        logType: "PLAN",
-      },
-      {
-        fileName: "mall_blueprint.dwg",
-        clientId: client1.id,
-        projectId: project2.id,
-        storagePath: "/docs/mall_blueprint.dwg",
-        size: 5096,
-        logType: "BLUEPRINT",
-      },
-    ],
-    skipDuplicates: true,
-  });
+  await prisma.project.createMany({ data: projects });
 
-  console.log("✅ Database seeded successfully!");
+  console.log("🌱 Database seeded successfully!");
+  console.log(`👥 Users created: ${TOTAL_FAKE_USERS + 2}`);
+  console.log(`📁 Projects created: ${TOTAL_PROJECTS}`);
 }
 
 main()
   .catch((e) => {
-    console.error("❌ Seeding error:", e);
+    console.error("❌ Seed error:", e);
     process.exit(1);
   })
   .finally(async () => {

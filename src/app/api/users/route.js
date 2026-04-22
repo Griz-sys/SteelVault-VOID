@@ -1,61 +1,215 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@/lib/prisma.js";
 import bcrypt from "bcryptjs";
 
-const prisma = new PrismaClient();
-
-// Handle POST /api/users (create user)
+/* ---------------- CREATE USER ---------------- */
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { userType, password, relievedDate, clientId } = body;
 
-    if (!userType) {
-      return NextResponse.json({ error: "userType is required (employee or client)" }, { status: 400 });
+    const {
+      userType,
+      password,
+      relievedDate,
+
+      // Client fields
+      companyName,
+      contactNo,
+      address,
+
+      // Employee fields
+      department,
+      designation,
+      empId,
+      companyEmpId,
+      isRelieved,
+
+      // Common
+      name,
+      email,
+      gender,
+    } = body;
+
+    if (!userType || !name || !email) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    let hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
 
-    // ✅ Pick only fields that actually exist in User schema
-    const allowedFields = ["name", "email", "gender", "contactNo", "address"];
-    const cleanData = {};
-    for (const key of allowedFields) {
-      if (body[key] !== undefined) {
-        cleanData[key] = body[key];
-      }
+    let clientRecord = null;
+
+    // 🧠 CREATE CLIENT FIRST
+    if (userType === "client") {
+      clientRecord = await prisma.client.create({
+        data: {
+          name,
+          email,
+          companyName: companyName?.trim() || null,
+          contactNo: contactNo || null,
+          address: address || null,
+        },
+      });
     }
 
+    // 🧱 CREATE USER
     const user = await prisma.user.create({
-  data: {
-    ...cleanData,
-    userType,
-    password: hashedPassword || undefined,
-    relievedDate: relievedDate ? new Date(relievedDate) : null,
-    clientId: userType === "client" ? Number(clientId) : null,
-  },
-});
+      data: {
+        name,
+        email,
+        gender: gender || null,
+        userType,
+        password: hashedPassword,
 
+        contactNo: contactNo || null,
+        address: address || null,
+
+        department: department || null,
+        designation: designation || null,
+        empId: empId || null,
+        companyEmpId: companyEmpId || null,
+
+        isRelieved: isRelieved ?? false,
+        relievedDate: relievedDate ? new Date(relievedDate) : null,
+
+        clientId: clientRecord?.id || null,
+      },
+    });
 
     return NextResponse.json(user);
+
   } catch (err) {
-    console.error("❌ API error:", err);
+    console.error("❌ Create error:", err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
+/* ---------------- UPDATE USER ---------------- */
+export async function PUT(req) {
+  try {
+    const body = await req.json();
 
-// Handle GET /api/users (list users - optional filter)
-export async function GET(req) {
-  const { searchParams } = new URL(req.url);
-  const userType = searchParams.get("userType");
-  const clientId = searchParams.get("clientId");
+    const {
+      id,
+      password,
+      relievedDate,
+      userType,
 
-  let users;
-  const where = {};
-  if (userType) where.userType = userType;
-  if (clientId) where.clientId = Number(clientId);
+      companyName,
+      contactNo,
+      address,
 
-  users = await prisma.user.findMany({ where, include: { client: true } });
+      department,
+      designation,
+      empId,
+      companyEmpId,
+      isRelieved,
 
-  return NextResponse.json(users);
+      name,
+      email,
+      gender,
+    } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: "User ID is required" }, { status: 400 });
+    }
+
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
+
+    let clientRecord = null;
+
+    // 🧠 UPDATE CLIENT
+    if (userType === "client") {
+      const user = await prisma.user.findUnique({ where: { id } });
+
+      if (user?.clientId) {
+        clientRecord = await prisma.client.update({
+          where: { id: user.clientId },
+          data: {
+            companyName: companyName?.trim() || null,
+            contactNo: contactNo || null,
+            address: address || null,
+          },
+        });
+      }
+    }
+
+    // 🧱 UPDATE USER
+    const user = await prisma.user.update({
+      where: { id },
+      data: {
+        name,
+        email,
+        gender: gender || null,
+        userType,
+
+        ...(hashedPassword && { password: hashedPassword }),
+
+        contactNo: contactNo || null,
+        address: address || null,
+
+        department: department || null,
+        designation: designation || null,
+        empId: empId || null,
+        companyEmpId: companyEmpId || null,
+
+        isRelieved: isRelieved ?? false,
+        relievedDate: relievedDate ? new Date(relievedDate) : null,
+      },
+    });
+
+    return NextResponse.json(user);
+
+  } catch (err) {
+    console.error("❌ Update error:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }
+
+  /* ---------------- GET USERS ---------------- */
+  export async function GET(req) {
+    try {
+      const { searchParams } = new URL(req.url);
+      const userType = searchParams.get("userType");
+      const clientId = searchParams.get("clientId");
+
+      const where = {};
+      if (userType) where.userType = userType;
+      if (clientId) where.clientId = Number(clientId);
+
+      const users = await prisma.user.findMany({
+        where,
+        include: { client: true },
+      });
+
+      return NextResponse.json(users);
+    } catch (err) {
+      console.error("❌ Fetch users error:", err);
+      return NextResponse.json({ error: "Failed to fetch users" }, { status: 500 });
+    }
+  }
+
+  /* ---------------- DELETE USER ---------------- */
+
+  export async function DELETE(req) {
+    try {
+      const { searchParams } = new URL(req.url);
+      const id = Number(searchParams.get("id"));
+
+      if (!id) {
+        return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
+      }
+
+      await prisma.user.delete({
+        where: { id },
+      });
+
+      return NextResponse.json({ success: true });
+    } catch (err) {
+      console.error("❌ Delete error:", err);
+
+      return NextResponse.json(
+        { error: "Delete failed" },
+        { status: 500 }
+      );
+    }
+  }
