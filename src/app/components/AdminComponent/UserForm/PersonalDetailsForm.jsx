@@ -31,16 +31,26 @@ const PersonalInformation = ({ readOnly = false }) => {
   const [clients, setClients] = useState([]);
 
   useEffect(() => {
-    if (selectedUser) {
-      setFormState({
-        ...initialFormState,
-        ...selectedUser,
-        password: '', // Never prefill password
-      });
-    } else {
-      setFormState(initialFormState);
-    }
-  }, [selectedUser]);
+  if (selectedUser) {
+    setFormState({
+      ...initialFormState,
+      ...selectedUser,
+
+      // 🔥 hydrate client fields properly
+      companyName: selectedUser.companyName || selectedUser.client?.companyName || '',
+      contactNo: selectedUser.contactNo || selectedUser.client?.contactNo || '',
+      address: selectedUser.address || selectedUser.client?.address || '',
+
+      password: '',
+      userType: selectedUser.userType || 'employee',
+    });
+  } else {
+    setFormState({
+      ...initialFormState,
+      userType: 'employee',
+    });
+  }
+}, [selectedUser]);
 
   useEffect(() => {
     if (formState.userType === 'client') {
@@ -56,55 +66,63 @@ const PersonalInformation = ({ readOnly = false }) => {
   };
 
   const handleSave = async () => {
-    let userPayload;
+  let userPayload;
 
-    if (formState.userType === 'employee') {
-      userPayload = {
-        userType: 'employee',
-        name: formState.name,
-        email: formState.email,
-        password: formState.password || undefined,
-        department: formState.department,
-        designation: formState.designation,
-        empId: formState.empId,
-        companyEmpId: formState.companyEmpId,
-        gender: formState.gender,
-        isRelieved: formState.isRelieved,
-        relievedDate: formState.relievedDate ? new Date(formState.relievedDate).toISOString() : null,
-      };
-    } else {
-      userPayload = {
-        userType: formState.userType,
-        name: formState.name,
-        email: formState.email,
-        password: formState.password || undefined,
-        companyName: formState.companyName,
-        contactNo: formState.contactNo,
-        address: formState.address,
-        clientId: formState.userType === 'client' ? Number(formState.clientId) : undefined,
-      };
-    }
+  if (formState.userType === 'employee') {
+    userPayload = {
+      userType: 'employee',
+      name: formState.name,
+      email: formState.email,
+      password: formState.password || undefined,
+      department: formState.department,
+      designation: formState.designation,
+      empId: formState.empId,
+      companyEmpId: formState.companyEmpId,
+      gender: formState.gender,
+      isRelieved: formState.isRelieved,
+      relievedDate: formState.relievedDate
+        ? new Date(formState.relievedDate).toISOString()
+        : null,
+    };
+  } else {
+    userPayload = {
+      userType: 'client',
+      name: formState.name,
+      email: formState.email,
+      password: formState.password || undefined,
+      companyName: formState.companyName?.trim() || null,
+      contactNo: formState.contactNo,
+      address: formState.address,
+      clientId: Number(formState.clientId),
+    };
+  }
 
-    try {
-      const res = await fetch("/api/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(userPayload),
-      });
+  try {
+    const isEdit = Boolean(selectedUser?.id);
 
-      if (!res.ok) throw new Error("Failed to save user");
+    const res = await fetch("/api/users", {
+      method: isEdit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...userPayload,
+        id: selectedUser?.id, // ✅ required for update
+      }),
+    });
 
-      const savedUser = await res.json();
-      console.log("✅ User saved:", savedUser);
+    if (!res.ok) throw new Error("Failed to save user");
 
-      alert(selectedUser ? "updated successfully!" : "saved successfully!");
-      setFormState(initialFormState);
-      setSelectedUser(null);
-    } catch (err) {
-      console.error("❌ Error saving user:", err);
-      alert("Error saving user: " + err.message);
-    }
-  };
+    const savedUser = await res.json();
+    console.log("✅ User saved:", savedUser);
+
+    alert(isEdit ? "Updated successfully!" : "Saved successfully!");
+    setFormState(initialFormState);
+    setSelectedUser(null);
+  } catch (err) {
+    console.error("❌ Error saving user:", err);
+    alert("Error saving user: " + err.message);
+  }
+};
+
 
   const fieldGroups = [
     {
@@ -266,7 +284,7 @@ const PersonalInformation = ({ readOnly = false }) => {
                           className="w-60 resize-none"
                           rows={2}
                           placeholder={label}
-                          value={formState[key]}
+                          value={formState[key] ?? ""}
                           onChange={!readOnly ? handleChange(key) : undefined}
                           disabled={readOnly}
                         />
@@ -277,7 +295,7 @@ const PersonalInformation = ({ readOnly = false }) => {
                         <select
                           id={key}
                           name={key}
-                          value={formState[key]}
+                          value={formState[key] ?? ""}
                           onChange={!readOnly ? handleChange(key) : undefined}
                           disabled={readOnly}
                         >
@@ -295,7 +313,7 @@ const PersonalInformation = ({ readOnly = false }) => {
                           name={key}
                           className="p-2 mt-1 w-60"
                           placeholder={label}
-                          value={formState[key]}
+                          value={formState[key] ?? ""}
                           onChange={!readOnly ? handleChange(key) : undefined}
                           disabled={readOnly || fieldReadOnly}
                           readOnly={fieldReadOnly}

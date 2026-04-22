@@ -377,6 +377,7 @@ const TransmittalForm = () => {
 
       const finalSheetData = [...headerSheetData, ...tableSheetData];
       const ws = XLSX.utils.aoa_to_sheet(finalSheetData);
+      
       // --- Styling ---
 
       // Merge first row across all columns for project name
@@ -713,7 +714,7 @@ const TransmittalForm = () => {
           <input
             type="text"
             value={zipName}
-            onChange={(e) => setZipName(e.target.value)} // ✅ allow user to change
+            onChange={(e) => zipName(e.target.value)} // ✅ allow user to change
             className="border rounded px-2 py-1 bg-gray-100 text-gray-700 w-full"
           />
         </div>
@@ -827,40 +828,67 @@ const TransmittalForm = () => {
         <div className="text-xs text-gray-700 mt-1">{uploadProgress}%</div>
       )}
 
-      {/* Publish confirmation modal (printable) */}
-      {showPublishModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-          <div className="bg-white border rounded-md w-[600px] p-4 shadow-lg relative">
-            <button
-              onClick={() => setShowPublishModal(false)}
-              className="absolute top-0 right-0 bg-red-600 text-white px-2 py-1 text-xs rounded-bl-md"
-            >
-              ✕
-            </button>
-            <h2 className="font-bold mb-2">Publish Result</h2>
-            {publishResult?.success ? (
-              <div>
-                <p className="mb-2">Publish succeeded.</p>
-                <pre className="text-xs bg-gray-100 p-2 rounded">{JSON.stringify(publishResult.data, null, 2)}</pre>
-              </div>
-            ) : (
-              <div>
-                <p className="mb-2 text-red-600">Publish failed.</p>
-                <pre className="text-xs bg-gray-100 p-2 rounded">{publishResult?.error}</pre>
-              </div>
-            )}
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => window.print()}
-                className="bg-blue-700 text-white px-4 py-1 text-sm rounded"
-              >
-                Print
-              </button>
-              <button onClick={() => setShowPublishModal(false)} className="bg-gray-400 text-white px-4 py-1 text-sm rounded">Close</button>
-            </div>
+     {/* Improved Publish Confirmation Modal (printable & accessible) */}
+{showPublishModal && (
+  <div
+    className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-[1000]"
+    tabIndex={-1}
+    aria-modal="true"
+    role="dialog"
+    onKeyDown={e => {
+      if (e.key === "Escape") setShowPublishModal(false);
+    }}
+  >
+    <div className="bg-white border rounded-lg w-full max-w-lg p-6 shadow-2xl relative print:w-full print:rounded-none print:shadow-none overflow-auto">
+      <button
+        type="button"
+        onClick={() => setShowPublishModal(false)}
+        aria-label="Close"
+        className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white px-3 py-1 text-base rounded-full transition"
+      >
+        &#x2715;
+      </button>
+      <h2 className="font-bold text-xl mb-3 text-gray-800 text-center">Publish Result</h2>
+      <div className="mb-4">
+        {publishResult?.success ? (
+          <div>
+            <p className="mb-2 text-green-700 font-semibold">Publish succeeded.</p>
+            <pre className="text-xs bg-green-50 border border-green-300 p-3 rounded font-mono whitespace-pre-wrap overflow-x-auto">
+              {publishResult?.data
+                ? JSON.stringify(publishResult.data, null, 2)
+                : "No data provided."}
+            </pre>
           </div>
-        </div>
-      )}
+        ) : (
+          <div>
+            <p className="mb-2 text-red-600 font-semibold">Publish failed.</p>
+            <pre className="text-xs bg-red-50 border border-red-300 p-3 rounded font-bold whitespace-pre-wrap overflow-x-auto">
+              {publishResult?.error
+                ? String(publishResult.error)
+                : "Unknown error."}
+            </pre>
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end gap-3 print:hidden">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          className="bg-teal-700 hover:bg-teal-800 text-white px-5 py-2 text-sm rounded shadow transition"
+        >
+          Print
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowPublishModal(false)}
+          className="bg-gray-400 hover:bg-gray-500 text-white px-5 py-2 text-sm rounded shadow transition"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       {/* Attachment Modal */}
       {showModal && (

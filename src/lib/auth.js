@@ -11,9 +11,7 @@ const ensureNextAuthUrl = () => {
     ? deployedHost.startsWith("http")
       ? deployedHost
       : `https://${deployedHost}`
-    : process.env.NODE_ENV === "development"
-      ? "http://localhost:3001"
-      : "http://localhost:3000";
+    : "http://localhost:3000";
 
   process.env.NEXTAUTH_URL = fallback;
   return fallback;
